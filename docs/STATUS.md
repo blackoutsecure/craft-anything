@@ -24,6 +24,12 @@ metadata and a bundle-contained regular executable member, not proof that the ap
 `core_evidence_browse`; the default `complete` returns all candidates and inventory metadata.
 Missing or malformed metadata gives partial coverage. Unsafe/ambiguous paths, links,
 special archive members and inventory-limit overruns are refused.
+The existing shared ZIP preflight checks end records and the entire central directory before
+the lenient listing is accepted, so under-declared counts cannot hide candidates or unsafe
+members. Namespace conflicts use cancellation-aware prefix-range lookups, not repeated
+ancestor walks. Directory names, metadata and plist reads use pinned, no-follow directory
+handles; a checked pathname is never reopened to read a plist. Executables need only regular
+file metadata, not content-read permission. Summary and complete views share one evidence ID.
 
 The existing inventory ceilings apply: 200,000 members, 1 GiB per member and 8 GiB total
 declared uncompressed data; callers may lower the member and total-byte limits. The existing
@@ -40,10 +46,33 @@ multiple candidates, missing metadata/executables, corrupt ZIP/plist data, trave
 absolute/drive paths, duplicate paths, file/directory conflicts, symlink escapes, limits,
 and Clean room refusal. CLI and MCP regressions exercise registration and evidence
 provenance. No proprietary IPA, real-device run or cross-platform live run is claimed.
-Local macOS arm64 verification: 938 tests passed across the engine, MCP and CLI crates,
-with 14 existing ignored tests. All 28 new regressions ran, including the 24-case discovery
-integration suite, one package-root unit test, one CLI test and two MCP tests. All-target
-clippy with warnings denied, formatting and whitespace checks passed.
+Local macOS arm64 verification after review hardening: 2,993 tests passed across the platform,
+formats, engine, MCP and CLI crates, with 31 existing ignored tests. The 27-case discovery
+integration suite passed, along with deterministic member/parent replacement, rooted-directory
+listing, trailing-separator, executable-permission, cancellation and evidence-view identity
+regressions. All-target clippy with warnings denied and formatting checks passed.
+
+The actual built CLI was also run against two maintainer-published apps listed in
+[the open-source iOS catalog](https://github.com/dkhamsing/open-source-ios-apps):
+
+| Official release | Verified source license | IPA / app / Payload members | Result |
+|---|---|---|---|
+| [iSH 1.3.2, build 494](https://github.com/ish-app/ish/releases/tag/builds/494) | GPLv3 with the project's iOS additional permission | 121 / 116 / 117 | Complete discovery in all three forms; bundle `app.ish.iSH`, executable `iSH` |
+| [UTM Remote 5.0.9, build 132](https://github.com/utmapp/UTM/releases/tag/v5.0.9-2) | Apache-2.0 at the release tag | 516 / 514 / 515 | Complete discovery in all three forms; bundle `com.utmapp.UTM-Remote`, executable `UTM Remote` |
+
+Both plists independently report iPhone and iPad device families. Only 2,946 and 2,136 plist
+bytes respectively were read by discovery. Repeated runs in every form, retained-summary
+paging, Clean room refusal and lowered-limit refusals passed. A generated 202-member archive
+with 12,000 nested components per long member completed in 0.369 seconds under a 15-second
+process deadline; this is a local observation, not a performance guarantee.
+
+UTM Remote's download matched GitHub's published SHA-256. iSH has no published asset digest;
+its official asset ID and locally computed hash were recorded without claiming publisher
+checksum verification. Catalog license labels were not treated as approval: each project's
+release-tag license was checked. The existing extractor was invoked separately to prepare
+directory fixtures, which were removed afterward. No downloaded app was installed or run,
+no binary fixture was committed, and no downloader was added to discovery. GUI startup,
+Windows/Linux execution and real-device runtime behavior remain unverified.
 
 ### Local Codex discovery and sign-in (R2.2)
 

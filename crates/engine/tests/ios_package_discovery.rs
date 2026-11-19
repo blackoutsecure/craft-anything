@@ -117,11 +117,13 @@ fn summary_mode_retains_every_candidate_for_later_evidence_browsing() {
     write_app(&payload, "Zulu.app", false);
     write_app(&payload, "Alpha.app", false);
     let engine = Engine::new(craft_anything_engine::testing::session());
+    let complete = engine.call("apple_package_discover", json!({"path": payload}), CallOptions::new(Caller::Mcp)).unwrap();
     let output = engine.call("apple_package_discover", json!({"path": payload, "detail": "summary"}), CallOptions::new(Caller::Mcp)).unwrap();
     let ToolOutput::Value(summary) = output else { panic!("expected a compact summary") };
     assert_eq!(summary["counts"]["candidates"], 2);
     assert_eq!(summary["primary_app"], "Alpha.app");
     assert_eq!(summary["continue_with"], "core_evidence_browse");
+    assert_eq!(summary["saved_evidence"]["evidence_id"], complete.to_json()["id"]);
     assert!(summary.get("inventory").is_none());
     let session = engine.session();
     let retained = session.resolve_evidence(summary["saved_evidence"]["evidence_id"].as_str().unwrap()).unwrap();
@@ -260,6 +262,19 @@ fn direct_app_executable_resolution_cannot_use_a_sibling_file() {
     assert!(record.result["primary_app"].is_null());
 }
 
+#[cfg(unix)]
+#[test]
+fn executable_resolution_does_not_require_reading_executable_contents() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let root = tempfile::tempdir().unwrap();
+    let app = write_app(root.path(), "Example.app", false);
+    std::fs::set_permissions(app.join("Main"), std::fs::Permissions::from_mode(0o111)).unwrap();
+    let record = discover(json!({"path": app})).unwrap();
+    assert_eq!(record.result["primary_app"], ".");
+    assert_eq!(record.result["candidates"][0]["executable_path"], "Main");
+}
+
 #[test]
 fn a_contained_executable_subdirectory_is_allowed() {
     let root = tempfile::tempdir().unwrap();
@@ -289,6 +304,11 @@ fn duplicate_normalized_members_and_file_directory_conflicts_are_refused() {
     for members in [
         vec![("Payload/Example.app/Info.plist", xml.as_slice()), ("Payload/Example.app/./Info.plist", xml.as_slice())],
         vec![("Payload/Example.app", b"not a directory".as_slice()), ("Payload/Example.app/Info.plist", xml.as_slice())],
+        vec![
+            ("Payload/Example.app", b"not a directory".as_slice()),
+            ("Payload/Example.app-other/Main", EXECUTABLE),
+            ("Payload/Example.app/Info.plist", xml.as_slice()),
+        ],
     ] {
         let path = write_ipa(root.path(), &members);
         let error = discover(json!({"path": path})).unwrap_err();
@@ -332,6 +352,16 @@ fn directory_symlinks_cannot_escape_through_plists_executables_or_candidate_bund
     assert_eq!(error.details.as_ref().unwrap()["reason"], "symlink_member");
 }
 
+#[cfg(unix)]
+#[test]
+fn a_root_bundle_symlink_is_refused_even_with_a_trailing_separator() {
+    let root = tempfile::tempdir().unwrap();
+    let app = write_app(root.path(), "Outside.app", false);
+    let link = root.path().join("Linked.app");
+    std::os::unix::fs::symlink(app, &link).unwrap();
+    assert!(discover(json!({"path": format!("{}/", link.display())})).is_err());
+}
+
 #[test]
 fn corrupt_zip_returns_structured_parse_failure_and_unknown_inventory_coverage() {
     let root = tempfile::tempdir().unwrap();
@@ -343,6 +373,36 @@ fn corrupt_zip_returns_structured_parse_failure_and_unknown_inventory_coverage()
     assert!(record.result["primary_app"].is_null());
     assert!(record.coverage.total.is_none());
     failure(&record, "invalid_zip");
+}
+
+#[test]
+fn under_declared_zip_members_cannot_hide_apps_or_unsafe_paths() {
+    let root = tempfile::tempdir().unwrap();
+    let xml = info(Some("Main"), false);
+    for hidden_path in [None, Some("../outside")] {
+        let mut members: Vec<(&str, &[u8])> = vec![
+            ("Payload/A.app/Info.plist", &xml),
+            ("Payload/A.app/Main", EXECUTABLE),
+            ("Payload/B.app/Info.plist", &xml),
+            ("Payload/B.app/Main", EXECUTABLE),
+        ];
+        if let Some(path) = hidden_path {
+            members.push((path, b"not inspected"));
+        }
+        for declared in [2_u16, 0] {
+            let mut bytes = zip_stored(&members);
+            let end = bytes.len() - 22;
+            bytes[end + 8..end + 10].copy_from_slice(&declared.to_le_bytes());
+            bytes[end + 10..end + 12].copy_from_slice(&declared.to_le_bytes());
+            let path = root.path().join("under-declared.ipa");
+            std::fs::write(&path, bytes).unwrap();
+            let record = discover(json!({"path": path})).unwrap();
+            failure(&record, "invalid_zip");
+            assert_eq!(record.result["recognized"], false);
+            assert!(record.result["primary_app"].is_null());
+            assert!(record.coverage.total.is_none());
+        }
+    }
 }
 
 #[test]

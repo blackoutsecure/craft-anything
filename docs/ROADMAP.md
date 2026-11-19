@@ -2095,9 +2095,13 @@ Owner: open · Status: in progress
       primary-app selection and evidence; no extraction, execution or build/device integration.
       — claimed: Copilot, branch feature/r3.11-ios-package-discovery
       — in PR [blackoutsecure/craft-anything#1](https://github.com/blackoutsecure/craft-anything/pull/1)
-- [ ] Harden iOS package discovery against concurrent member replacement, under-declared ZIP
+- [x] Harden iOS package discovery against concurrent member replacement, under-declared ZIP
       directories and deeply nested path-validation work; validate a licensed public app release.
       — claimed: Copilot, branch feature/r3.11-ios-package-discovery
+- [ ] **decision**: Offer an explicit, opt-in import from a pinned maintainer-published release
+      asset, recording its source revision, license/permission and verified SHA-256 before the
+      existing strict discovery step. Reuse the bounded verified downloader, not engine
+      installation. No App Store acquisition, decryption, signing, installation or automatic launch.
 - [x] Bound native value-flow decoding and incoming parameter nodes by the requested graph node budget, and mark omitted code as partial.
       — claimed: Afloat16, branch bugfix/r3.11-value-flow-budget-20261110
 - [x] Filter ARM32 and Thumb stack-pointer (`r13`) and program-counter (`r15`) bookkeeping out of `dataflow::def_use` without hiding general-purpose `r13`/`r15` on x86-64, and clobber only canonical full-width scratch registers (`rax`, `rcx`, `rdx`) on 32-/16-bit x86 calls.

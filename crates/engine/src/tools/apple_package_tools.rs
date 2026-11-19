@@ -1,7 +1,7 @@
 //! Metadata-first discovery of user-supplied iOS packages. Only candidate Info.plists are read;
 //! executables and other members are neither decompressed nor executed.
 
-use super::artifact_tools::{WalkLimits, WalkOptions, read_capped, safe_components, target_path, walk_dir_within};
+use super::artifact_tools::{WalkLimits, WalkOptions, safe_components, target_path, walk_dir_contained};
 use super::native_common::spec;
 use super::static_input;
 use super::{Detail, detailed};
@@ -9,11 +9,12 @@ use crate::tool::{Ctx, Effects, Requires, ToolOutput, ToolSpec, Toolset, parse_p
 use craft_anything_analysis::js_inventory::{InvEntry, InvLimits, Inventory, path_role, sniff_kind};
 use craft_anything_evidence::{Authority, Confidence, Coverage, CoverageStatus, ErrorCode, Limitation, Location, Subject, ToolError, sha256_hex};
 use craft_anything_formats::{plist, zip};
+use craft_anything_platform::fs::ReadOnlyDirectory;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::Arc;
 
 pub fn specs() -> Vec<ToolSpec> {
@@ -111,7 +112,7 @@ struct Discovery {
 
 enum PackageSource {
     Ipa { bytes: Arc<[u8]>, members: BTreeMap<String, zip::ZipEntry> },
-    Directory { root: PathBuf },
+    Directory { root: ReadOnlyDirectory },
 }
 
 impl PackageSource {
@@ -128,13 +129,19 @@ impl PackageSource {
                     ToolError::new(code, error.to_string()).with_details(json!({"reason": reason, "path": member}))
                 })
             }
-            Self::Directory { root } => read_capped(&contained_file(root, bundle, member)?, max),
+            Self::Directory { root } => root.open_dir(Path::new(bundle))?.read_file_capped(Path::new(bundle_relative_member(bundle, member)?), max),
         }
     }
 
     fn check_executable(&self, bundle: &str, member: &str) -> Result<(), ToolError> {
         if let Self::Directory { root } = self {
-            contained_file(root, bundle, member)?;
+            let metadata = root.open_dir(Path::new(bundle))?.symlink_metadata(Path::new(bundle_relative_member(bundle, member)?))?;
+            if metadata.file_type().is_symlink() {
+                return Err(unsafe_member("symlink_member", member, "symbolic links are not followed"));
+            }
+            if !metadata.is_file() {
+                return Err(unsafe_member("non_regular_member", member, "not a regular file"));
+            }
         }
         Ok(())
     }
@@ -178,6 +185,54 @@ fn metadata_entry(path: String, size: u64, directory: bool) -> InvEntry {
     }
 }
 
+fn invalid_zip(message: impl Into<String>) -> ToolError {
+    ToolError::new(ErrorCode::GarbledOutput, message).with_details(json!({"reason": "invalid_zip"}))
+}
+
+fn package_archive(bytes: &[u8], limits: InvLimits) -> Result<zip::ZipArchive, ToolError> {
+    let directory = zip::preflight::preflight(
+        bytes,
+        zip::preflight::Limits { max_entries: limits.max_entries as u64, max_central_directory_bytes: bytes.len() as u64, max_name_bytes: u16::MAX },
+    )
+    .map_err(|error| match error {
+        zip::preflight::Error::TooManyEntries { .. } => over_limit("archive_member_limit", error.to_string()),
+        zip::preflight::Error::CentralDirectoryTooLarge { .. } | zip::preflight::Error::NameTooLong { .. } => {
+            over_limit("archive_listing_limit", error.to_string())
+        }
+        _ => invalid_zip(error.to_string()),
+    })?;
+    let archive = zip::parse(bytes, limits.max_entries).map_err(|error| match error {
+        zip::ZipError::TooLarge(max) => over_limit("archive_listing_limit", format!("ZIP inventory reached its {max}-byte parser limit.")),
+        _ => invalid_zip(error.to_string()),
+    })?;
+    if archive.truncated || archive.entries.len() as u64 != directory.entries || archive.declared_entries != directory.entries {
+        return Err(invalid_zip("The ZIP listing disagrees with its validated central directory."));
+    }
+    if !archive.warnings.is_empty() {
+        return Err(invalid_zip(archive.warnings.join("; ")));
+    }
+    Ok(archive)
+}
+
+fn inventory_member_metadata(members: &BTreeMap<String, zip::ZipEntry>, check_cancel: &impl Fn() -> Result<(), ToolError>) -> Result<Vec<InvEntry>, ToolError> {
+    use std::ops::Bound::{Included, Unbounded};
+
+    let mut entries = Vec::new();
+    for (path, entry) in members {
+        check_cancel()?;
+        if !entry.is_dir {
+            let prefix = format!("{path}/");
+            if let Some((descendant, _)) = members.range::<str, _>((Included(prefix.as_str()), Unbounded)).next()
+                && descendant.starts_with(&prefix)
+            {
+                return Err(unsafe_member("ambiguous_member", descendant, "a parent member is not a directory"));
+            }
+        }
+        entries.push(metadata_entry(path.clone(), entry.uncompressed_size, entry.is_dir));
+    }
+    Ok(entries)
+}
+
 fn archive_source(ctx: &Ctx<'_>, bytes: Arc<[u8]>, archive: zip::ZipArchive, inventory: &mut Inventory, limits: InvLimits) -> Result<PackageSource, ToolError> {
     let mut members = BTreeMap::new();
     let mut total = 0;
@@ -192,27 +247,20 @@ fn archive_source(ctx: &Ctx<'_>, bytes: Arc<[u8]>, archive: zip::ZipArchive, inv
             return Err(unsafe_member("ambiguous_member", &path, "duplicate normalized member path"));
         }
     }
-    for (path, entry) in &members {
-        let mut ancestor = Path::new(path).parent();
-        while let Some(parent) = ancestor {
-            if let Some(parent_entry) = members.get(parent.to_string_lossy().as_ref())
-                && !parent_entry.is_dir
-            {
-                return Err(unsafe_member("ambiguous_member", path, "a parent member is not a directory"));
-            }
-            ancestor = parent.parent();
-        }
-        inventory.entries.push(metadata_entry(path.clone(), entry.uncompressed_size, entry.is_dir));
-    }
+    inventory.entries = inventory_member_metadata(&members, &|| ctx.cancel.check())?;
     inventory.containers.push(json!({"path": "", "kind": "ipa", "entries": members.len(), "declared": archive.declared_entries, "zip64": archive.zip64}));
     Ok(PackageSource::Ipa { bytes, members })
 }
 
 fn directory_source(ctx: &Ctx<'_>, path: &Path, inventory: &mut Inventory, limits: InvLimits) -> Result<PackageSource, ToolError> {
-    let root = std::fs::canonicalize(path).map_err(|error| ToolError::io(path.display(), error))?;
+    let parent = path.parent().ok_or_else(|| ToolError::invalid("A package directory needs a parent path."))?;
+    let name = path.file_name().ok_or_else(|| ToolError::invalid("A package directory needs a filename."))?;
+    let root = std::fs::canonicalize(parent).map_err(|error| ToolError::io(parent.display(), error))?.join(name);
+    let reader = ReadOnlyDirectory::open(&root)?;
     let skip = |_: &str| false;
-    let walked = walk_dir_within(
+    let walked = walk_dir_contained(
         &root,
+        &reader,
         &WalkOptions { max_files: limits.max_entries, max_depth: 64, skip_dir: &skip, gitignore: false, include_hidden: true },
         WalkLimits { max_entries: limits.max_entries, ..WalkLimits::for_files(limits.max_entries) },
         &ctx.cancel,
@@ -232,10 +280,6 @@ fn directory_source(ctx: &Ctx<'_>, path: &Path, inventory: &mut Inventory, limit
     for directory in walked.dirs {
         ctx.cancel.check()?;
         let normalized = member_path(&directory)?;
-        let canonical = std::fs::canonicalize(root.join(&directory)).map_err(|error| ToolError::io(&directory, error))?;
-        if !canonical.starts_with(&root) {
-            return Err(unsafe_member("symlink_member", &directory, "directory resolves outside the package"));
-        }
         if !seen.insert(normalized.clone()) {
             return Err(unsafe_member("ambiguous_member", &directory, "duplicate normalized member path"));
         }
@@ -251,28 +295,18 @@ fn directory_source(ctx: &Ctx<'_>, path: &Path, inventory: &mut Inventory, limit
         inventory.entries.push(metadata_entry(normalized, file.size, false));
     }
     inventory.entries.sort_by(|left, right| left.path.cmp(&right.path));
-    Ok(PackageSource::Directory { root })
+    Ok(PackageSource::Directory { root: reader })
 }
 
-fn contained_file(root: &Path, bundle: &str, member: &str) -> Result<PathBuf, ToolError> {
-    let mut path = root.to_path_buf();
-    for part in safe_components(member).map_err(|reason| unsafe_member("unsafe_member_path", member, reason))? {
-        path.push(part);
-        let metadata = std::fs::symlink_metadata(&path).map_err(|error| ToolError::io(member, error))?;
-        if metadata.file_type().is_symlink() {
-            return Err(unsafe_member("symlink_member", member, "symbolic links are not followed"));
-        }
+fn bundle_relative_member<'a>(bundle: &str, member: &'a str) -> Result<&'a str, ToolError> {
+    if bundle == "." {
+        return Ok(member);
     }
-    let bundle = std::fs::canonicalize(root.join(bundle)).map_err(|error| ToolError::io(bundle, error))?;
-    let canonical = std::fs::canonicalize(&path).map_err(|error| ToolError::io(member, error))?;
-    if !bundle.starts_with(root) || !canonical.starts_with(&bundle) {
-        return Err(unsafe_member("symlink_member", member, "file resolves outside its candidate bundle"));
-    }
-    let metadata = std::fs::symlink_metadata(&path).map_err(|error| ToolError::io(member, error))?;
-    if !metadata.is_file() {
-        return Err(unsafe_member("non_regular_member", member, "not a regular file"));
-    }
-    Ok(canonical)
+    member
+        .strip_prefix(bundle)
+        .and_then(|tail| tail.strip_prefix('/'))
+        .filter(|tail| !tail.is_empty())
+        .ok_or_else(|| unsafe_member("unsafe_member_path", member, "member is not inside this candidate bundle"))
 }
 
 fn candidate_roots(inventory: &Inventory, form: PackageForm) -> Vec<String> {
@@ -407,24 +441,12 @@ fn apple_package_discover(ctx: &mut Ctx<'_>, params: Value) -> Result<ToolOutput
     let source = if form == PackageForm::Ipa {
         let input = static_input::load_path(&path.to_string_lossy(), crate::target::MAX_TARGET_BYTES)?;
         subject = input.subject;
-        match zip::parse(&input.bytes, limits.max_entries) {
-            Ok(archive) if archive.truncated || archive.declared_entries > limits.max_entries as u64 => {
-                return Err(over_limit("archive_member_limit", format!("The archive exceeds the {}-member inventory limit.", limits.max_entries)));
-            }
-            Ok(archive) if archive.warnings.is_empty() => Some(archive_source(ctx, input.bytes, archive, &mut discovery.inventory, limits)?),
-            Err(zip::ZipError::TooLarge(max)) => {
-                return Err(over_limit("archive_listing_limit", format!("ZIP inventory reached its {max}-byte parser limit.")));
-            }
-            result => {
-                let message = match result {
-                    Err(error) => error.to_string(),
-                    Ok(archive) => archive.warnings.join("; "),
-                };
+        match package_archive(&input.bytes, limits) {
+            Ok(archive) => Some(archive_source(ctx, input.bytes, archive, &mut discovery.inventory, limits)?),
+            Err(error) if error.code == ErrorCode::OverLimit => return Err(error),
+            Err(error) => {
                 discovery.inventory.truncated = true;
-                discovery.parse_failures.push(ParseFailure {
-                    path: discovery.inventory.root.clone(),
-                    error: ToolError::new(ErrorCode::GarbledOutput, message).with_details(json!({"reason": "invalid_zip"})),
-                });
+                discovery.parse_failures.push(ParseFailure { path: discovery.inventory.root.clone(), error });
                 None
             }
         }
@@ -480,7 +502,7 @@ fn apple_package_discover(ctx: &mut Ctx<'_>, params: Value) -> Result<ToolOutput
         ctx,
         "apple_package_discover",
         subject,
-        json!({"path": path, "detail": p.detail, "max_entries": limits.max_entries, "max_total_bytes": limits.max_total_bytes}),
+        json!({"path": path, "max_entries": limits.max_entries, "max_total_bytes": limits.max_total_bytes}),
     )
     .result(serde_json::to_value(&discovery).map_err(|error| ToolError::internal(error.to_string()))?)
     .summary(summary)
@@ -509,6 +531,28 @@ fn apple_package_discover(ctx: &mut Ctx<'_>, params: Value) -> Result<ToolOutput
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn deep_member_metadata_remains_cancellable_between_members() {
+        use std::cell::Cell;
+
+        let prefix = "directory/".repeat(4_000);
+        let first = format!("{prefix}first");
+        let second = format!("{prefix}second");
+        let bytes = craft_anything_testkit::electron::zip_stored(&[(&first, b""), (&second, b"")]);
+        let members = zip::parse(&bytes, 10).unwrap().entries.into_iter().map(|entry| (entry.name.clone(), entry)).collect();
+        let cancel = crate::CancelToken::default();
+        let checks = Cell::new(0);
+        let result = inventory_member_metadata(&members, &|| {
+            checks.set(checks.get() + 1);
+            if checks.get() == 2 {
+                cancel.cancel();
+            }
+            cancel.check()
+        });
+        assert_eq!(result.unwrap_err().code, ErrorCode::Cancelled);
+        assert_eq!(checks.get(), 2);
+    }
 
     #[test]
     fn candidate_roots_include_empty_apps_but_not_nested_or_unrelated_bundles() {

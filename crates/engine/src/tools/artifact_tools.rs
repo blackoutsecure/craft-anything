@@ -349,6 +349,63 @@ pub(crate) fn walk_dir_within(root: &Path, opts: &WalkOptions<'_>, limits: WalkL
     walk_dir_reading(root, opts, limits, cancel, |dir| Ok(std::fs::read_dir(dir)?.map(|e| e.map(|e| e.file_name()))))
 }
 
+/// The same bounded walk, with names and metadata read through a pinned directory capability.
+pub(crate) fn walk_dir_contained(
+    root: &Path,
+    directory: &craft_anything_platform::fs::ReadOnlyDirectory,
+    opts: &WalkOptions<'_>,
+    limits: WalkLimits,
+    cancel: &CancelToken,
+) -> Result<Walked, ToolError> {
+    walk_dir_contained_after(root, directory, opts, limits, cancel, |_| {})
+}
+
+fn walk_dir_contained_after(
+    root: &Path,
+    directory: &craft_anything_platform::fs::ReadOnlyDirectory,
+    opts: &WalkOptions<'_>,
+    limits: WalkLimits,
+    cancel: &CancelToken,
+    mut before_open: impl FnMut(&Path),
+) -> Result<Walked, ToolError> {
+    if opts.gitignore {
+        return Err(ToolError::invalid("A contained inventory cannot read ambient .gitignore files."));
+    }
+    let relative = |path: &Path| path.strip_prefix(root).map(Path::to_path_buf).map_err(std::io::Error::other);
+    walk_dir_reading_metadata(
+        root,
+        opts,
+        limits,
+        cancel,
+        |path| {
+            let path = relative(path)?;
+            before_open(&path);
+            directory.open_dir(&path).map_err(contained_io)?.entries()
+        },
+        |path| {
+            let metadata = directory.symlink_metadata(&relative(path)?).map_err(contained_io)?;
+            let kind = metadata.file_type();
+            Ok(WalkMetadata { link: kind.is_symlink(), directory: kind.is_dir(), file: kind.is_file(), size: metadata.len() })
+        },
+    )
+}
+
+fn contained_io(error: ToolError) -> std::io::Error {
+    let kind = match error.code {
+        ErrorCode::NotFound => std::io::ErrorKind::NotFound,
+        ErrorCode::NoPermission => std::io::ErrorKind::PermissionDenied,
+        _ => std::io::ErrorKind::Other,
+    };
+    std::io::Error::new(kind, error)
+}
+
+struct WalkMetadata {
+    link: bool,
+    directory: bool,
+    file: bool,
+    size: u64,
+}
+
 /// A folder a walk has open: its listing, and how far through it the walk is.
 struct Frame {
     dir: PathBuf,
@@ -382,7 +439,22 @@ fn walk_dir_reading<I: Iterator<Item = std::io::Result<std::ffi::OsString>>>(
     opts: &WalkOptions<'_>,
     limits: WalkLimits,
     cancel: &CancelToken,
+    read_dir: impl FnMut(&Path) -> std::io::Result<I>,
+) -> Result<Walked, ToolError> {
+    walk_dir_reading_metadata(root, opts, limits, cancel, read_dir, |path| {
+        let metadata = std::fs::symlink_metadata(path)?;
+        let kind = metadata.file_type();
+        Ok(WalkMetadata { link: kind.is_symlink(), directory: kind.is_dir(), file: kind.is_file(), size: metadata.len() })
+    })
+}
+
+fn walk_dir_reading_metadata<I: Iterator<Item = std::io::Result<std::ffi::OsString>>>(
+    root: &Path,
+    opts: &WalkOptions<'_>,
+    limits: WalkLimits,
+    cancel: &CancelToken,
     mut read_dir: impl FnMut(&Path) -> std::io::Result<I>,
+    mut metadata: impl FnMut(&Path) -> std::io::Result<WalkMetadata>,
 ) -> Result<Walked, ToolError> {
     let mut out = Walked::default();
     let mut ignore = craft_anything_analysis::js_source::Ignore::default();
@@ -445,7 +517,7 @@ fn walk_dir_reading<I: Iterator<Item = std::io::Result<std::ffi::OsString>>>(
             out.ignored += 1;
             continue;
         }
-        let meta = match std::fs::symlink_metadata(&path) {
+        let meta = match metadata(&path) {
             Ok(meta) => meta,
             // Gone since the folder was listed: there is nothing to miss.
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
@@ -455,12 +527,11 @@ fn walk_dir_reading<I: Iterator<Item = std::io::Result<std::ffi::OsString>>>(
                 continue;
             }
         };
-        let ft = meta.file_type();
-        if ft.is_symlink() {
+        if meta.link {
             out.links.push(child_rel);
             continue;
         }
-        if ft.is_dir() {
+        if meta.directory {
             if name == ".git" || (opts.skip_dir)(&child_rel) || (opts.gitignore && ignore.is_ignored(&child_rel, true)) {
                 out.ignored += 1;
                 continue;
@@ -471,7 +542,7 @@ fn walk_dir_reading<I: Iterator<Item = std::io::Result<std::ffi::OsString>>>(
             }
             out.dirs.push(child_rel.clone());
             to_open = Some((path, child_rel, frame.depth + 1));
-        } else if ft.is_file() {
+        } else if meta.file {
             if opts.gitignore && ignore.is_ignored(&child_rel, false) {
                 out.ignored += 1;
                 continue;
@@ -480,7 +551,7 @@ fn walk_dir_reading<I: Iterator<Item = std::io::Result<std::ffi::OsString>>>(
                 out.truncated = true;
                 break;
             }
-            out.files.push(WalkedFile { rel: child_rel, abs: path, size: meta.len() });
+            out.files.push(WalkedFile { rel: child_rel, abs: path, size: meta.size });
         }
     }
     // A walk that stopped early still says which open folders had entries it couldn't read.
@@ -1230,6 +1301,39 @@ mod tests {
     use super::*;
     use crate::{CallOptions, Caller, Engine};
     use craft_anything_testkit::electron as fx;
+
+    #[cfg(unix)]
+    #[test]
+    fn contained_walk_does_not_list_a_directory_swapped_for_an_external_link() {
+        use std::os::unix::fs::symlink;
+
+        let root = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(root.path()).unwrap();
+        let parent = root.join("parent");
+        std::fs::create_dir(&parent).unwrap();
+        std::fs::write(parent.join("inside.txt"), b"inside").unwrap();
+        std::fs::write(outside.path().join("beyond.txt"), b"beyond").unwrap();
+        let directory = craft_anything_platform::fs::ReadOnlyDirectory::open(&root).unwrap();
+        let skip = |_: &str| false;
+        let walked = walk_dir_contained_after(
+            &root,
+            &directory,
+            &WalkOptions { max_files: 10, max_depth: 10, skip_dir: &skip, gitignore: false, include_hidden: true },
+            WalkLimits::for_files(10),
+            &CancelToken::default(),
+            |relative| {
+                if relative == Path::new("parent") {
+                    std::fs::rename(&parent, root.join("saved-parent")).unwrap();
+                    symlink(outside.path(), &parent).unwrap();
+                }
+            },
+        )
+        .unwrap();
+        assert!(walked.files.is_empty());
+        assert!(walked.truncated);
+        assert!(walked.unlisted.iter().any(|(path, _)| path == "parent"));
+    }
 
     fn call(e: &Engine, id: &str, p: Value) -> Result<Value, ToolError> {
         e.call(id, p, CallOptions::new(Caller::Cli)).map(|o| o.to_json())
