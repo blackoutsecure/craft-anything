@@ -2090,6 +2090,10 @@ Owner: open · Status: in progress
 
 ### R3.11 Single-file apps, game files and stand-in backends
 Owner: open · Status: in progress
+- [ ] Discover user-supplied iOS packages (`.ipa`, `.app` and extracted `Payload` folders) in
+      Deep mode with bounded inventories, safe bundle paths, parsed Info.plists, deterministic
+      primary-app selection and evidence; no extraction, execution or build/device integration.
+      — claimed: Copilot, branch feature/r3.11-ios-package-discovery
 - [x] Bound native value-flow decoding and incoming parameter nodes by the requested graph node budget, and mark omitted code as partial.
       — claimed: Afloat16, branch bugfix/r3.11-value-flow-budget-20261110
 - [x] Filter ARM32 and Thumb stack-pointer (`r13`) and program-counter (`r15`) bookkeeping out of `dataflow::def_use` without hiding general-purpose `r13`/`r15` on x86-64, and clobber only canonical full-width scratch registers (`rax`, `rcx`, `rdx`) on 32-/16-bit x86 calls.
