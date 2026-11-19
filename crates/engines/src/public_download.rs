@@ -213,6 +213,7 @@ fn download_with_agent(
                 match error.code {
                     ErrorCode::OverLimit => "The source exceeds the chosen byte limit.",
                     ErrorCode::Cancelled => "The download was cancelled.",
+                    ErrorCode::TimedOut => "The source transfer reached its deadline.",
                     _ => "The source response could not be downloaded completely.",
                 },
             )
@@ -272,6 +273,7 @@ mod tests {
             .tls_config(tls.client.clone())
             .timeout_connect(Some(Duration::from_secs(2)))
             .timeout_recv_response(Some(Duration::from_millis(100)))
+            .timeout_recv_body(Some(Duration::from_millis(100)))
             .build();
         ureq::Agent::with_parts(config, DefaultConnector::default(), FixtureResolver(address))
     }
@@ -454,5 +456,21 @@ mod tests {
             .unwrap_err();
         assert_eq!(error.code, ErrorCode::FileError);
         assert_eq!(error.details.as_ref().unwrap()["status"], 404);
+    }
+
+    #[test]
+    fn review_stalled_bodies_preserve_timeout_classification_and_clean_the_partial() {
+        let tls = Tls::new();
+        let server = Server::start_delayed_body(Some(tls.server.clone()), Duration::from_millis(250), payload);
+        let agent = fixture_agent(&server, &tls);
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("package.ipa");
+        let error = write_checked(&path, None, "https://packages.example.com/package.ipa", &mut |sink| {
+            download_with_agent("https://packages.example.com/package.ipa", sink, 4096, None, &|_, _| {}, &agent).map(|result| result.bytes)
+        })
+        .unwrap_err();
+        assert_eq!(error.code, ErrorCode::TimedOut);
+        assert!(!path.exists());
+        assert!(!path.with_extension("download").exists());
     }
 }

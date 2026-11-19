@@ -151,3 +151,29 @@ pub fn show(app: &mut CraftApp, ui: &mut Ui, close: &mut bool) {
         }
     });
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn completed_results_from_the_previous_target_do_not_repopulate_new_target_views() {
+        let mut app = crate::demo::app(crate::demo::engine(craft_anything_engine::Mode::Beginner, true));
+        let previous = app.target_generation;
+        app.reset_target_context(true);
+        for route in [Route::Chat { intro: "Old target".into(), cta: false }, Route::View(crate::state::CenterTab::Result)] {
+            app.handle_done(crate::jobs::Finished {
+                job: 7,
+                result: Ok(crate::Done::Tool {
+                    tool: "old_target_tool".into(),
+                    params: json!({}),
+                    route,
+                    target_generation: previous,
+                    result: Ok(craft_anything_engine::ToolOutput::Value(json!({"old_target":true}))),
+                }),
+            });
+        }
+        assert!(app.state.chat.is_empty());
+        assert!(app.state.views.is_empty());
+    }
+}

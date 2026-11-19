@@ -150,6 +150,7 @@ pub enum Done {
         tool: String,
         params: Value,
         route: Route,
+        target_generation: u64,
         result: Result<ToolOutput, ToolError>,
     },
     Opened {
@@ -594,6 +595,7 @@ pub struct CraftApp {
     /// Jobs whose result goes into the conversation (a first look, an answer without an AI):
     /// what the Ask screen waits on and its Stop cancels.
     chat_jobs: Vec<u64>,
+    target_generation: u64,
     view_dirty: bool,
     last_view: Option<Instant>,
     applied_theme: Option<(ThemeKind, bool)>,
@@ -686,6 +688,7 @@ impl CraftApp {
             saving: None,
             creating: None,
             chat_jobs: Vec::new(),
+            target_generation: 0,
             asking: Default::default(),
             pausing: Default::default(),
             pending_consent: Default::default(),
@@ -1030,11 +1033,12 @@ impl CraftApp {
         let title = spec.title.to_string();
         self.log(false, format!("Running {id}"));
         let chat = matches!(route, Route::Chat { .. });
+        let target_generation = self.target_generation;
         let job = self.jobs.spawn(title, true, move |j| {
             let progress = j.reporter();
             let opts = CallOptions::new(Caller::Ui).with_consent(consent).with_cancel(j.cancel.clone()).with_progress(&progress);
             let result = engine.call(&id, params.clone(), opts);
-            Ok(Done::Tool { tool: id, params, route, result })
+            Ok(Done::Tool { tool: id, params, route, target_generation, result })
         });
         if chat {
             self.chat_jobs.push(job);
@@ -1609,25 +1613,19 @@ impl CraftApp {
             Done::Created { ws, request, backend, pictures, attached } => self.created(*ws, request, backend, pictures, attached),
             Done::Thumb { path, image } => self.thumb_ready(path, image),
             Done::Preview { path, image } => self.preview_ready(path, image),
-            Done::Tool { tool, params, route, result } => self.tool_done(tool, params, route, result),
+            Done::Tool { tool, params, route, target_generation, result } => {
+                if target_generation == self.target_generation {
+                    self.tool_done(tool, params, route, result);
+                }
+            }
             Done::Acted { tool, params, result } => self.acted(job, tool, &params, result),
             Done::Opened { path, result } => match result {
                 Ok(v) => {
-                    // Another target: a new conversation, so answers about two things don't mix.
-                    if self.view.active_target().is_some_and(|t| t.path != path) {
-                        self.state.chat.clear();
-                        if let Some(mut c) = self.conversation.take() {
-                            c.stop();
-                        }
-                    }
+                    self.reset_target_context(self.view.active_target().is_some_and(|t| t.path != path));
                     self.settings.recent.retain(|p| p != &path);
                     self.settings.recent.insert(0, path.clone());
                     self.settings.recent.truncate(12);
                     self.settings_changed();
-                    self.state.lists.clear();
-                    self.state.views.clear();
-                    self.state.selection = None;
-                    self.view_dirty = true;
                     let name = v.get("name").and_then(Value::as_str).unwrap_or("it").to_string();
                     self.toast(i18n::trf("Opened {name}", &[("name", &name)]), false);
                     self.log(false, format!("Opened {}", path.display()));
@@ -1857,7 +1855,29 @@ impl CraftApp {
         }
     }
 
+    fn reset_target_context(&mut self, new_conversation: bool) {
+        if new_conversation {
+            self.target_generation = self.target_generation.wrapping_add(1);
+            self.state.chat.clear();
+            if let Some(mut conversation) = self.conversation.take() {
+                conversation.stop();
+            }
+            for job in self.chat_jobs.drain(..) {
+                self.jobs.cancel(job);
+            }
+            self.pending_consent.clear();
+        }
+        self.state.lists.clear();
+        self.state.views.clear();
+        self.state.selection = None;
+        self.state.selected_evidence = None;
+        self.view_dirty = true;
+    }
+
     fn tool_done(&mut self, tool: String, params: Value, route: Route, result: Result<ToolOutput, ToolError>) {
+        if tool == "apple_package_import" && matches!(&result, Ok(ToolOutput::Evidence(_))) {
+            self.reset_target_context(true);
+        }
         self.view_dirty = true;
         let fill = match &result {
             Ok(ToolOutput::Evidence(e)) => Fill::Ready(e.clone()),

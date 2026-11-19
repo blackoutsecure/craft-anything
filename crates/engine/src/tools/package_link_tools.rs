@@ -11,7 +11,9 @@ use craft_anything_platform::fs::ReadOnlyDirectory;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use sha2::{Digest as _, Sha256};
 use std::collections::BTreeSet;
+use std::io::Read as _;
 use std::path::{Path, PathBuf};
 
 const PAGE_BYTES: u64 = 2 << 20;
@@ -142,11 +144,13 @@ fn github_api(url: &str) -> Option<String> {
     }
 }
 
-fn html_candidates(page: &str, body: &str) -> SourcePreview {
+fn html_candidates(page: &str, body: &str) -> Result<SourcePreview, ToolError> {
     let mut result = SourcePreview { network_used: true, ..Default::default() };
+    let document = craft_anything_js::html::scan_html(body);
+    let base = document.base_href.as_deref().map(|base| public_download::resolve_link(page, base)).transpose()?.unwrap_or_else(|| page.into());
     let mut seen = BTreeSet::new();
-    for href in craft_anything_js::html::scan_html(body).links {
-        match public_download::resolve_link(page, &href) {
+    for href in document.links {
+        match public_download::resolve_link(&base, &href) {
             Ok(url) if public_download::is_ipa(&url) && seen.insert(url.clone()) => {
                 if result.candidates.len() < CANDIDATES {
                     let mut candidate = direct_link(&url);
@@ -159,7 +163,7 @@ fn html_candidates(page: &str, body: &str) -> SourcePreview {
             _ => result.rejected_links += 1,
         }
     }
-    result
+    Ok(result)
 }
 
 fn release_candidates(page: &str, body: &[u8]) -> Result<SourcePreview, ToolError> {
@@ -217,7 +221,7 @@ fn package_sources(ctx: &mut Ctx<'_>, params: Value) -> Result<ToolOutput, ToolE
                 } else {
                     let text =
                         std::str::from_utf8(&bytes).map_err(|_| ToolError::unsupported("The publisher page is not UTF-8 HTML; use its direct IPA link."))?;
-                    html_candidates(&receipt.final_url, text)
+                    html_candidates(&receipt.final_url, text)?
                 }
             }
         }
@@ -270,6 +274,57 @@ struct Incoming {
     keep: bool,
 }
 
+fn verify_published_cache(base: &Path, hash: &str, max_bytes: u64, cancel: &crate::CancelToken) -> Result<(), ToolError> {
+    let physical = std::fs::canonicalize(base).map_err(|error| ToolError::io("package cache", error))?;
+    let (file, metadata) = ReadOnlyDirectory::open(&physical)?.open_dir(Path::new(hash))?.open_regular_file(Path::new("package.ipa"))?;
+    if metadata.len() > max_bytes {
+        return Err(ToolError::new(ErrorCode::OverLimit, "The cached package exceeds the chosen byte limit."));
+    }
+    let mut reader = file.take(max_bytes.saturating_add(1));
+    let mut buffer = [0u8; 8192];
+    let mut total = 0u64;
+    let mut digest = Sha256::new();
+    loop {
+        cancel.check()?;
+        let count = reader.read(&mut buffer).map_err(|error| ToolError::io("package cache", error))?;
+        if count == 0 {
+            break;
+        }
+        total = total.saturating_add(count as u64);
+        if total > max_bytes {
+            return Err(ToolError::new(ErrorCode::OverLimit, "The cached package exceeds the chosen byte limit."));
+        }
+        digest.update(buffer.get(..count).unwrap_or_default());
+    }
+    if hex::encode(digest.finalize()) != hash {
+        return Err(ToolError::new(ErrorCode::FileHashMismatch, "The existing package cache entry does not match its content address."));
+    }
+    Ok(())
+}
+
+fn publish_cache(incoming: Incoming, base: &Path, hash: &str, max_bytes: u64, cancel: &crate::CancelToken) -> Result<(), ToolError> {
+    cancel.check()?;
+    let destination = base.join(hash);
+    match std::fs::symlink_metadata(&destination) {
+        Ok(_) => return verify_published_cache(base, hash, max_bytes, cancel),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(ToolError::io("package cache", error)),
+    }
+    match std::fs::rename(&incoming.path, &destination) {
+        Ok(()) => {
+            incoming.keep();
+            Ok(())
+        }
+        Err(error) if matches!(error.kind(), std::io::ErrorKind::AlreadyExists | std::io::ErrorKind::DirectoryNotEmpty) => {
+            verify_published_cache(base, hash, max_bytes, cancel)
+        }
+        Err(error) if cfg!(windows) && error.kind() == std::io::ErrorKind::PermissionDenied && destination.exists() => {
+            verify_published_cache(base, hash, max_bytes, cancel)
+        }
+        Err(error) => Err(ToolError::io("package cache publication", error)),
+    }
+}
+
 impl Incoming {
     fn new(path: PathBuf) -> Self {
         Self { path, keep: false }
@@ -318,11 +373,10 @@ fn package_import(ctx: &mut Ctx<'_>, params: Value) -> Result<ToolOutput, ToolEr
     if std::fs::symlink_metadata(&base).is_ok_and(|metadata| metadata.file_type().is_symlink()) {
         return Err(ToolError::invalid("The managed package cache cannot be a symbolic link."));
     }
-    let mut created_cache = None;
     let cached = expected.as_deref().map(|hash| read_cached(&base, hash, p.max_bytes)).transpose()?.flatten();
-    let bytes = if let Some(bytes) = cached {
+    let (bytes, staging) = if let Some(bytes) = cached {
         ctx.report(None, "Reusing the SHA-256-verified local package");
-        bytes
+        (bytes, None)
     } else {
         let incoming = Incoming::new(fresh_dir_in(&base, "incoming")?);
         let path = incoming.path.join("package.ipa");
@@ -338,31 +392,26 @@ fn package_import(ctx: &mut Ctx<'_>, params: Value) -> Result<ToolOutput, ToolEr
         ctx.cancel.check()?;
         let bytes = ReadOnlyDirectory::open(&std::fs::canonicalize(&incoming.path).map_err(|error| ToolError::io("package download", error))?)?
             .read_file_capped(Path::new("package.ipa"), p.max_bytes)?;
-        let hash = sha256_hex(&bytes);
-        let destination = base.join(&hash);
-        match std::fs::create_dir(&destination) {
-            Ok(()) => {
-                created_cache = Some(Incoming::new(destination.clone()));
-                craft_anything_platform::fs::set_private_dir(&destination)?;
-                std::fs::hard_link(&path, destination.join("package.ipa")).map_err(|error| ToolError::io("package cache", error))?;
-            }
-            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
-                read_cached(&base, &hash, p.max_bytes)?.ok_or_else(|| ToolError::internal("The package cache disappeared."))?;
-            }
-            Err(error) => return Err(ToolError::io("package cache", error)),
-        }
-        bytes
+        (bytes, Some(incoming))
     };
     ctx.cancel.check()?;
-    let hash = sha256_hex(&bytes);
+    let mut target = Target::from_bytes(base.join("package.ipa"), "package.ipa".into(), bytes);
+    let hash = target.sha256.clone();
     let path = base.join(&hash).join("package.ipa");
-    let discovered = super::apple_package_tools::apple_package_discover(ctx, json!({"path":path}))?;
+    target.path.clone_from(&path);
+    let input =
+        super::static_input::Input { bytes: target.bytes.clone(), subject: target.subject(), path: path.clone(), name: target.name.clone(), kind: target.kind };
+    let discovered = super::apple_package_tools::discover_ipa_input(ctx, input)?;
     let ToolOutput::Evidence(discovery) = discovered else { return Err(ToolError::internal("Package discovery did not return evidence.")) };
     if discovery.result.get("recognized").and_then(Value::as_bool) != Some(true) {
         return Err(ToolError::unsupported("The downloaded file did not contain a valid top-level iOS app; it was not opened.")
             .with_details(json!({"reason":"package_not_recognized","parse_failures":discovery.result.get("parse_failures")})));
     }
-    let target = Target::from_bytes(path.clone(), "package.ipa".into(), bytes);
+    ctx.cancel.check()?;
+    if let Some(staging) = staging {
+        publish_cache(staging, &base, &hash, p.max_bytes, &ctx.cancel)?;
+    }
+    ctx.cancel.check()?;
     let target_id = target.id.clone();
     ctx.session.record((*discovery).clone())?;
     let evidence = builder(ctx, "apple_package_import", target.subject(), json!({"url":url,"source_page":source_page,"expected_sha256":expected,"max_bytes":p.max_bytes}))
@@ -375,22 +424,106 @@ fn package_import(ctx: &mut Ctx<'_>, params: Value) -> Result<ToolOutput, ToolEr
         .confidence(Confidence::Derived)
         .authority(Authority::OriginalFiles)
         .coverage(discovery.coverage)
-        .limitations(discovery.limitations.clone())
+        .limitations(discovery.limitations.iter().cloned().map(|mut limitation| {
+            limitation.message = format!("Discovery step only: {}", limitation.message);
+            limitation
+        }))
         .limitations(expected.is_none().then(|| Limitation::new("checksum_unverified", "No trusted expected checksum was supplied. The computed SHA-256 is a local fingerprint, not publisher verification.")))
         .limitation(Limitation::new("permission_asserted", "The caller confirmed permission; Craft Anything does not determine legal rights or authenticate the publisher. A checksum match verifies bytes against the supplied digest, not safety or ownership."))
         .target_content(true)
         .link(discovery.id.clone())
         .build()?;
     ctx.session.add_target(target);
-    if let Some(created) = created_cache {
-        created.keep();
-    }
     Ok(ToolOutput::evidence(evidence))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn staged_package(base: &Path) -> (Incoming, String, Vec<u8>) {
+        let info =
+            craft_anything_testkit::apple::to_xml(&craft_anything_testkit::apple::dict(vec![("CFBundleExecutable", craft_anything_testkit::apple::s("Main"))]));
+        let bytes =
+            craft_anything_testkit::electron::zip_stored(&[("Payload/Test.app/Info.plist", info.as_bytes()), ("Payload/Test.app/Main", b"never executed")]);
+        let staging = Incoming::new(fresh_dir_in(base, "incoming").unwrap());
+        std::fs::write(staging.path.join("package.ipa"), &bytes).unwrap();
+        let hash = sha256_hex(&bytes);
+        (staging, hash, bytes)
+    }
+
+    #[test]
+    fn review_concurrent_publication_exposes_only_complete_immutable_entries() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::{Arc, Barrier};
+        use std::time::{Duration, Instant};
+
+        let root = tempfile::tempdir().unwrap();
+        let (first, hash, bytes) = staged_package(root.path());
+        let (second, other_hash, _) = staged_package(root.path());
+        assert_eq!(hash, other_hash);
+        assert!(read_cached(root.path(), &hash, 4096).unwrap().is_none());
+        let barrier = Arc::new(Barrier::new(3));
+        let finished = Arc::new(AtomicUsize::new(0));
+        let mut threads = Vec::new();
+        for staging in [first, second] {
+            let (barrier, finished) = (barrier.clone(), finished.clone());
+            let (base, hash) = (root.path().to_path_buf(), hash.clone());
+            threads.push(std::thread::spawn(move || {
+                barrier.wait();
+                let result = publish_cache(staging, &base, &hash, 4096, &crate::CancelToken::default());
+                finished.fetch_add(1, Ordering::SeqCst);
+                result.unwrap();
+            }));
+        }
+        barrier.wait();
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while finished.load(Ordering::SeqCst) != 2 && Instant::now() < deadline {
+            if let Some(observed) = read_cached(root.path(), &hash, 4096).unwrap() {
+                assert_eq!(observed, bytes);
+            }
+            std::thread::yield_now();
+        }
+        assert_eq!(finished.load(Ordering::SeqCst), 2);
+        for thread in threads {
+            thread.join().unwrap();
+        }
+        assert_eq!(read_cached(root.path(), &hash, 4096).unwrap().unwrap(), bytes);
+        assert_eq!(std::fs::read_dir(root.path()).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn review_a_later_cancel_never_deletes_a_published_package_used_by_another_import() {
+        let root = tempfile::tempdir().unwrap();
+        let (staging, hash, bytes) = staged_package(root.path());
+        let cancel = crate::CancelToken::default();
+        let result = (|| {
+            publish_cache(staging, root.path(), &hash, 4096, &cancel)?;
+            assert_eq!(read_cached(root.path(), &hash, 4096)?.unwrap(), bytes);
+            cancel.cancel();
+            cancel.check()
+        })();
+        assert_eq!(result.unwrap_err().code, ErrorCode::Cancelled);
+        assert_eq!(read_cached(root.path(), &hash, 4096).unwrap().unwrap(), bytes);
+    }
+
+    #[test]
+    fn review_html_base_links_resolve_against_the_document_base_not_the_page() {
+        let page = "https://publisher.example.com/releases/";
+        let result = html_candidates(page, r#"<base href="https://cdn.example.com/ios/"><a href="App.ipa">Get it</a>"#).unwrap();
+        assert_eq!(result.candidates[0].url, "https://cdn.example.com/ios/App.ipa");
+        assert_eq!(result.candidates[0].source_page.as_deref(), Some(page));
+    }
+
+    #[test]
+    fn review_relative_and_unsafe_document_bases_are_not_silently_misresolved() {
+        let page = "https://publisher.example.com/releases/";
+        let result = html_candidates(page, r#"<base href="../ios/"><base href="https://ignored.example.com/"><a href="App.ipa">Get it</a>"#).unwrap();
+        assert_eq!(result.candidates[0].url, "https://publisher.example.com/ios/App.ipa");
+        for base in ["http://cdn.example.com/", "https://127.0.0.1/", "javascript:alert(1)"] {
+            assert_eq!(html_candidates(page, &format!(r#"<base href="{base}"><a href="App.ipa">Get it</a>"#)).unwrap_err().code, ErrorCode::BadInput);
+        }
+    }
 
     #[test]
     fn static_page_candidates_reuse_the_html_scanner_without_following_scripts_or_unsafe_links() {
@@ -404,7 +537,8 @@ mod tests {
             <a href="javascript:run()">script</a>
             <a href="../build/App.ipa">duplicate</a>
         "#,
-        );
+        )
+        .unwrap();
         assert_eq!(result.candidates.len(), 1);
         assert_eq!(result.candidates[0].url, "https://publisher.example.com/build/App.ipa");
         assert_eq!(result.rejected_links, 3);

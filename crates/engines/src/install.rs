@@ -346,7 +346,11 @@ pub(crate) fn read_download_response(
         if cancel.is_some_and(|c| c()) {
             return Err(ToolError::cancelled());
         }
-        let n = reader.read(&mut chunk).map_err(|e| ToolError::new(ErrorCode::EngineMissing, format!("The download broke off: {e}")))?;
+        let n = reader.read(&mut chunk).map_err(|error| {
+            let timeout = matches!(error.kind(), std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock)
+                || error.get_ref().and_then(|cause| cause.downcast_ref::<ureq::Error>()).is_some_and(|cause| matches!(cause, ureq::Error::Timeout(_)));
+            ToolError::new(if timeout { ErrorCode::TimedOut } else { ErrorCode::EngineMissing }, format!("The download broke off: {error}"))
+        })?;
         if n == 0 {
             break;
         }

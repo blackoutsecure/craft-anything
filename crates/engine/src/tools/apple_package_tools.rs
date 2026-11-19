@@ -14,7 +14,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 pub fn specs() -> Vec<ToolSpec> {
@@ -418,15 +418,42 @@ fn inspect_candidates(ctx: &Ctx<'_>, discovery: &mut Discovery, source: &Package
 
 pub(crate) fn apple_package_discover(ctx: &mut Ctx<'_>, params: Value) -> Result<ToolOutput, ToolError> {
     let p: PackageParams = parse_params(params)?;
-    let defaults = InvLimits::default();
-    if p.max_entries == 0 || p.max_entries > defaults.max_entries || p.max_total_bytes == 0 || p.max_total_bytes > defaults.max_total_bytes {
-        return Err(ToolError::invalid(format!("max_entries must be 1-{} and max_total_bytes 1-{}.", defaults.max_entries, defaults.max_total_bytes)));
-    }
-    let limits = InvLimits { max_entries: p.max_entries, max_total_bytes: p.max_total_bytes, max_depth: 0, ..defaults };
+    let limits = discovery_limits(&p)?;
     let path = target_path(ctx, p.path.as_deref())?;
     ctx.cancel.check()?;
     let metadata = std::fs::symlink_metadata(&path).map_err(|error| ToolError::io(path.display(), error))?;
     let form = PackageForm::detect(&path, &metadata)?;
+    discover_package(ctx, p, path, form, None, limits)
+}
+
+/// Inspect verified bytes without reopening a staged or cached package pathname.
+pub(crate) fn discover_ipa_input(ctx: &mut Ctx<'_>, input: static_input::Input) -> Result<ToolOutput, ToolError> {
+    ctx.cancel.check()?;
+    if input.bytes.len() as u64 > crate::target::MAX_TARGET_BYTES {
+        return Err(over_limit("archive_input_limit", "The package exceeds the existing target-input limit."));
+    }
+    let path = input.path.clone();
+    let p: PackageParams = parse_params(json!({"path":path}))?;
+    let limits = discovery_limits(&p)?;
+    discover_package(ctx, p, path, PackageForm::Ipa, Some(input), limits)
+}
+
+fn discovery_limits(p: &PackageParams) -> Result<InvLimits, ToolError> {
+    let defaults = InvLimits::default();
+    if p.max_entries == 0 || p.max_entries > defaults.max_entries || p.max_total_bytes == 0 || p.max_total_bytes > defaults.max_total_bytes {
+        return Err(ToolError::invalid(format!("max_entries must be 1-{} and max_total_bytes 1-{}.", defaults.max_entries, defaults.max_total_bytes)));
+    }
+    Ok(InvLimits { max_entries: p.max_entries, max_total_bytes: p.max_total_bytes, max_depth: 0, ..defaults })
+}
+
+fn discover_package(
+    ctx: &mut Ctx<'_>,
+    p: PackageParams,
+    path: PathBuf,
+    form: PackageForm,
+    ipa: Option<static_input::Input>,
+    limits: InvLimits,
+) -> Result<ToolOutput, ToolError> {
     let name = path.file_name().unwrap_or_default().to_string_lossy().into_owned();
     let mut subject = Subject { kind: "directory".into(), name: Some(name.clone()), sha256: None };
     let mut discovery = Discovery {
@@ -439,7 +466,10 @@ pub(crate) fn apple_package_discover(ctx: &mut Ctx<'_>, params: Value) -> Result
     };
     ctx.report(None, "Inventorying iOS package metadata");
     let source = if form == PackageForm::Ipa {
-        let input = static_input::load_path(&path.to_string_lossy(), crate::target::MAX_TARGET_BYTES)?;
+        let input = match ipa {
+            Some(input) => input,
+            None => static_input::load_path(&path.to_string_lossy(), crate::target::MAX_TARGET_BYTES)?,
+        };
         subject = input.subject;
         match package_archive(&input.bytes, limits) {
             Ok(archive) => Some(archive_source(ctx, input.bytes, archive, &mut discovery.inventory, limits)?),
@@ -531,6 +561,27 @@ pub(crate) fn apple_package_discover(ctx: &mut Ctx<'_>, params: Value) -> Result
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn review_loaded_ipa_discovery_reuses_verified_input_without_opening_a_path() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("not-published.ipa");
+        let info =
+            craft_anything_testkit::apple::to_xml(&craft_anything_testkit::apple::dict(vec![("CFBundleExecutable", craft_anything_testkit::apple::s("Main"))]));
+        let bytes =
+            craft_anything_testkit::electron::zip_stored(&[("Payload/Test.app/Info.plist", info.as_bytes()), ("Payload/Test.app/Main", b"not executed")]);
+        let target = crate::target::Target::from_bytes(path.clone(), "not-published.ipa".into(), bytes);
+        let input =
+            static_input::Input { bytes: target.bytes.clone(), subject: target.subject(), path: path.clone(), name: target.name.clone(), kind: target.kind };
+        let mut session = crate::testing::session();
+        let mut context =
+            Ctx { tool: "apple_package_discover", session: &mut session, cancel: crate::CancelToken::default(), progress: &|_| {}, caller: crate::Caller::Cli };
+        let output = discover_ipa_input(&mut context, input).unwrap().to_json();
+        assert_eq!(output["result"]["primary_app"], "Payload/Test.app");
+        assert_eq!(output["subject"]["sha256"], target.sha256);
+        assert!(!path.exists());
+        assert_eq!(std::sync::Arc::strong_count(&target.bytes), 1);
+    }
 
     #[test]
     fn deep_member_metadata_remains_cancellable_between_members() {

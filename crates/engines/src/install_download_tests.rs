@@ -17,6 +17,10 @@ pub(crate) struct Server {
 
 impl Server {
     pub(crate) fn start(tls: Option<Arc<rustls::ServerConfig>>, reply: impl Fn(&str) -> String + Send + 'static) -> Self {
+        Self::start_delayed_body(tls, Duration::ZERO, reply)
+    }
+
+    pub(crate) fn start_delayed_body(tls: Option<Arc<rustls::ServerConfig>>, body_delay: Duration, reply: impl Fn(&str) -> String + Send + 'static) -> Self {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         listener.set_nonblocking(true).unwrap();
         let url = format!("{}://localhost:{}", if tls.is_some() { "https" } else { "http" }, listener.local_addr().unwrap().port());
@@ -32,9 +36,9 @@ impl Server {
                         socket.set_write_timeout(Some(Duration::from_secs(3))).unwrap();
                         if let Some(config) = &tls {
                             let conn = rustls::ServerConnection::new(config.clone()).unwrap();
-                            respond(&mut rustls::StreamOwned::new(conn, socket), &count, &reply);
+                            respond(&mut rustls::StreamOwned::new(conn, socket), &count, body_delay, &reply);
                         } else {
-                            respond(&mut { socket }, &count, &reply);
+                            respond(&mut { socket }, &count, body_delay, &reply);
                         }
                     }
                     Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => thread::sleep(Duration::from_millis(5)),
@@ -55,7 +59,7 @@ impl Drop for Server {
     }
 }
 
-fn respond(stream: &mut (impl Read + Write), count: &AtomicUsize, reply: &impl Fn(&str) -> String) {
+fn respond(stream: &mut (impl Read + Write), count: &AtomicUsize, body_delay: Duration, reply: &impl Fn(&str) -> String) {
     let mut header = Vec::new();
     let mut byte = [0];
     let deadline = std::time::Instant::now() + Duration::from_secs(3);
@@ -70,6 +74,17 @@ fn respond(stream: &mut (impl Read + Write), count: &AtomicUsize, reply: &impl F
     }
     count.fetch_add(1, Ordering::SeqCst);
     let response = reply(&String::from_utf8_lossy(&header));
+    if !body_delay.is_zero()
+        && let Some(at) = response.find("\r\n\r\n")
+    {
+        let (headers, body) = response.split_at(at + 4);
+        let _ = stream.write_all(headers.as_bytes());
+        let _ = stream.flush();
+        thread::sleep(body_delay);
+        let _ = stream.write_all(body.as_bytes());
+        let _ = stream.flush();
+        return;
+    }
     let _ = stream.write_all(response.as_bytes());
     let _ = stream.flush();
 }

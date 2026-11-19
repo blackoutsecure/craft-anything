@@ -1,6 +1,6 @@
 use craft_anything_engine::{Engine, Mode};
 use craft_anything_testkit::{apple, electron::zip_stored};
-use craft_anything_ui_egui::state::{ChatItem, Modal, Screen};
+use craft_anything_ui_egui::state::{CenterTab, ChatItem, Fill, Modal, RailKind, Screen};
 use craft_anything_ui_egui::{CraftApp, demo};
 use egui_kittest::Harness;
 use egui_kittest::kittest::Queryable;
@@ -9,11 +9,18 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 fn harness(config: &Path, deep: bool) -> Harness<'static, CraftApp> {
+    harness_with_previous(config, deep, None)
+}
+
+fn harness_with_previous(config: &Path, deep: bool, previous: Option<craft_anything_engine::target::Target>) -> Harness<'static, CraftApp> {
     let mut session = craft_anything_engine::Session::isolated(config);
     session.settings.deep_mode = deep;
     session.settings.first_run_done = true;
     session.settings.mode = Mode::Beginner;
     session.settings.language = "en".into();
+    if let Some(previous) = previous {
+        session.add_target(previous);
+    }
     let engine = Arc::new(Engine::new(session));
     Harness::builder().with_size(egui::vec2(1280.0, 1000.0)).with_max_steps(32).build_eframe(move |context| {
         CraftApp::setup_context(&context.egui_ctx);
@@ -21,6 +28,31 @@ fn harness(config: &Path, deep: bool) -> Harness<'static, CraftApp> {
         app.state.make.look = true;
         app
     })
+}
+
+struct PreviousConversation(Arc<std::sync::atomic::AtomicBool>);
+
+impl craft_anything_ai::Conversation for PreviousConversation {
+    fn send(&mut self, _: &str) {}
+    fn poll(&mut self) -> Vec<craft_anything_ai::AgentEvent> {
+        Vec::new()
+    }
+    fn answer_consent(&mut self, _: &str, _: bool) {}
+    fn stop(&mut self) {
+        self.0.store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+    fn is_busy(&self) -> bool {
+        false
+    }
+}
+
+fn previous_context(app: &mut CraftApp, stopped: Arc<std::sync::atomic::AtomicBool>) {
+    app.state.chat.push(ChatItem::User("Question about the previous target".into()));
+    app.state.lists.insert(RailKind::Functions, Fill::Value(serde_json::json!({"old":true})));
+    app.state.views.insert(CenterTab::Result, Fill::Value(serde_json::json!({"old":true})));
+    app.state.selection = Some(serde_json::json!({"old":true}));
+    app.state.selected_evidence = Some("old-evidence".into());
+    app.conversation = Some(Box::new(PreviousConversation(stopped)));
 }
 
 fn wait(harness: &mut Harness<'static, CraftApp>, done: impl Fn(&CraftApp) -> bool) {
@@ -44,14 +76,17 @@ fn import_dialog_previews_selects_confirms_and_studies_through_the_shared_engine
     let directory = root.path().join("package-imports").join(&hash);
     std::fs::create_dir_all(&directory).unwrap();
     std::fs::write(directory.join("package.ipa"), bytes).unwrap();
-    let mut h = harness(root.path(), true);
+    let previous = craft_anything_engine::target::Target::from_bytes(root.path().join("previous.txt"), "previous.txt".into(), b"old target".to_vec());
+    let mut h = harness_with_previous(root.path(), true, Some(previous));
+    let stopped = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    previous_context(h.state_mut(), stopped.clone());
     h.run_steps(3);
     h.get_by_label("An app or a file");
     h.get_by_label("Import from link").click();
     h.run_steps(3);
     assert_eq!(h.state().state.modal, Some(Modal::PackageLink));
     assert!(!h.state().state.package_link.authorized);
-    assert!(h.state().engine.session().active().is_err());
+    assert_eq!(h.state().engine.session().active().unwrap().target.name, "previous.txt");
     h.get_by_label("Package or publisher link").focus();
     h.run_steps(2);
     h.get_by_label("Package or publisher link").type_text("https://downloads.example.com/Example.ipa");
@@ -83,6 +118,38 @@ fn import_dialog_previews_selects_confirms_and_studies_through_the_shared_engine
     assert!(h.state().state.modal.is_none());
     assert_eq!(h.state().engine.session().active().unwrap().target.sha256, hash);
     assert_eq!(std::fs::read_dir(&directory).unwrap().count(), 1);
+    assert!(stopped.load(std::sync::atomic::Ordering::SeqCst));
+    assert!(h.state().conversation.is_none());
+    assert!(!h.state().state.chat.iter().any(|entry| matches!(entry, ChatItem::User(text) if text.contains("previous target"))));
+    assert!(h.state().state.lists.is_empty());
+    assert!(h.state().state.views.is_empty());
+    assert!(h.state().state.selection.is_none());
+    assert!(h.state().state.selected_evidence.is_none());
+}
+
+#[test]
+fn failed_import_keeps_the_previous_conversation_and_target_views() {
+    let root = tempfile::tempdir().unwrap();
+    let previous = craft_anything_engine::target::Target::from_bytes(root.path().join("previous.txt"), "previous.txt".into(), b"old target".to_vec());
+    let previous_hash = previous.sha256.clone();
+    let mut h = harness_with_previous(root.path(), true, Some(previous));
+    let stopped = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    previous_context(h.state_mut(), stopped.clone());
+    h.run_steps(3);
+    h.state_mut().run_tool(
+        "apple_package_import",
+        serde_json::json!({"url":"https://127.0.0.1/Example.ipa","confirmed":true,"authorized":true}),
+        craft_anything_ui_egui::Route::Chat { intro: "Import".into(), cta: false },
+        craft_anything_engine::Consent::Granted,
+    );
+    wait(&mut h, |app| app.state.chat.iter().any(|entry| matches!(entry, ChatItem::Error { .. })));
+    assert!(!stopped.load(std::sync::atomic::Ordering::SeqCst));
+    assert!(h.state().conversation.is_some());
+    assert_eq!(h.state().engine.session().active().unwrap().target.sha256, previous_hash);
+    assert!(h.state().state.chat.iter().any(|entry| matches!(entry, ChatItem::User(text) if text.contains("previous target"))));
+    assert!(h.state().state.lists.contains_key(&RailKind::Functions));
+    assert!(h.state().state.views.contains_key(&CenterTab::Result));
+    assert!(h.state().state.selection.is_some());
 }
 
 #[test]
