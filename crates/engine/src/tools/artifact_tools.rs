@@ -805,7 +805,7 @@ fn inventory_path_unlisted(path: &Path, limits: InvLimits, cancel: &CancelToken)
     Ok((inv.finish(), Subject { kind: kind.into(), sha256: Some(sha256_hex(&bytes)), name: Some(name) }, unlisted))
 }
 
-fn target_path(ctx: &Ctx<'_>, p: Option<&str>) -> Result<PathBuf, ToolError> {
+pub(crate) fn target_path(ctx: &Ctx<'_>, p: Option<&str>) -> Result<PathBuf, ToolError> {
     match p {
         Some(p) => abs_path(p, "path"),
         None => Ok(ctx.session.active()?.target.path.clone()),

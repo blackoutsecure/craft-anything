@@ -6,6 +6,45 @@ workspace clippy, layers, fmt and the secret scan of all history were clean. Chi
 
 ## What works, and how it was checked
 
+### iOS package discovery (R3.11)
+
+The headless Apple tool `apple_package_discover` recognizes user-supplied `.ipa` files,
+direct `.app` directories and extracted `Payload` directories. For example:
+`craft-anything-cli --deep apple-package-discover --path /path/to/Example.ipa`.
+The existing tool registry exposes the same operation to MCP clients in the Apple toolset.
+Clean room refuses it before parameter validation, filesystem inspection or ZIP parsing.
+The general ZIP/directory target kinds and the macOS Study/launch behavior are unchanged.
+
+Discovery inventories member metadata, reads each top-level candidate's XML or binary
+`Info.plist` through the existing parser, and resolves `CFBundleExecutable` without a
+bundle-name fallback. Every candidate and parse failure is retained in evidence; the first
+valid candidate in normalized, case-sensitive path order is primary. `valid` means readable
+metadata and a bundle-contained regular executable member, not proof that the app runs.
+`--detail summary` returns counts and a retained evidence reference for paging with
+`core_evidence_browse`; the default `complete` returns all candidates and inventory metadata.
+Missing or malformed metadata gives partial coverage. Unsafe/ambiguous paths, links,
+special archive members and inventory-limit overruns are refused.
+
+The existing inventory ceilings apply: 200,000 members, 1 GiB per member and 8 GiB total
+declared uncompressed data; callers may lower the member and total-byte limits. The existing
+2 GiB target-input ceiling and 64 MiB plist-read ceiling also apply. Only candidate plists
+are read, hashed and (for IPA) CRC-checked. No archive is extracted; executable contents,
+signing, encryption and runtime compatibility are not checked. Directory inputs use the
+existing bounded walker (including its `.git` exclusion), are not atomic snapshots and do
+not claim whole-tree content hashes. Nested apps/extensions are not primary candidates.
+No downloads, decryption, re-signing, installation, launching, SwiftUI builds, simulator
+integration or UI changes are included.
+
+Generated fixtures cover minimal IPA, direct XML/binary-plist bundles, extracted Payload,
+multiple candidates, missing metadata/executables, corrupt ZIP/plist data, traversal,
+absolute/drive paths, duplicate paths, file/directory conflicts, symlink escapes, limits,
+and Clean room refusal. CLI and MCP regressions exercise registration and evidence
+provenance. No proprietary IPA, real-device run or cross-platform live run is claimed.
+Local macOS arm64 verification: 938 tests passed across the engine, MCP and CLI crates,
+with 14 existing ignored tests. All 28 new regressions ran, including the 24-case discovery
+integration suite, one package-root unit test, one CLI test and two MCP tests. All-target
+clippy with warnings denied, formatting and whitespace checks passed.
+
 ### Local Codex discovery and sign-in (R2.2)
 
 macOS Dock launches can find an executable Codex CLI bundled with ChatGPT.app or

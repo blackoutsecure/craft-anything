@@ -158,6 +158,40 @@ fn tool_call_success_and_error_shapes() {
 }
 
 #[test]
+fn ios_package_discovery_is_an_apple_tool_with_evidence_and_untrusted_content_metadata() {
+    let root = tempfile::tempdir().unwrap();
+    let app = root.path().join("Example.app");
+    std::fs::create_dir(&app).unwrap();
+    std::fs::write(app.join("Info.plist"), b"<plist><dict><key>CFBundleExecutable</key><string>Main</string></dict></plist>").unwrap();
+    std::fs::write(app.join("Main"), b"never executed").unwrap();
+    let out = run_with(
+        ServerOptions { all_tools: true, ..Default::default() },
+        &[req(1, "tools/list", json!({})), req(2, "tools/call", json!({"name": "apple_package_discover", "arguments": {"path": app}}))],
+    );
+    assert!(tool_names(&response(&out, 1)).contains(&"apple_package_discover".to_string()));
+    let reply = response(&out, 2);
+    assert_eq!(reply["result"]["isError"], false, "{reply}");
+    let evidence = &reply["result"]["structuredContent"];
+    assert_eq!(evidence["operation"], "apple_package_discover");
+    assert_eq!(evidence["result"]["primary_app"], ".");
+    assert_eq!(evidence["carries_target_content"], true);
+    assert_eq!(reply["result"]["_meta"]["provenance"]["from_target"], true, "{reply}");
+}
+
+#[test]
+fn ios_package_discovery_is_hidden_and_refused_over_mcp_in_clean_room() {
+    let mut session = craft_anything_engine::testing::session();
+    session.settings.deep_mode = false;
+    let server = test_server(Arc::new(Engine::new(session)), ServerOptions { all_tools: true, ..Default::default() });
+    let listing = server.tools_list();
+    assert!(!listing["tools"].as_array().unwrap().iter().any(|tool| tool["name"] == "apple_package_discover"));
+    let reply = server.tools_call(&json!(1), &json!({"name": "apple_package_discover", "arguments": {"unknown": true}}), &CancelToken::default());
+    assert_eq!(reply["result"]["isError"], true, "{reply}");
+    let error: Value = serde_json::from_str(reply["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
+    assert_eq!(error["error"]["details"]["reason"], "clean_room");
+}
+
+#[test]
 fn hidden_tool_call_enables_its_toolset() {
     let out = run(&[req(1, "tools/call", json!({"name": "native_cursor_show", "arguments": {}}))]);
     assert!(out.iter().any(|m| m["method"] == "notifications/tools/list_changed"));

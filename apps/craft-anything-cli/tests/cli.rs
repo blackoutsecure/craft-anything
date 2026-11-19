@@ -65,6 +65,27 @@ fn commands_and_exit_codes() {
 }
 
 #[test]
+fn ios_package_discovery_is_registered_on_the_cli_and_requires_deep_mode() {
+    let config = tempfile::tempdir().unwrap();
+    let root = tempfile::tempdir().unwrap();
+    let app = root.path().join("Example.app");
+    std::fs::create_dir(&app).unwrap();
+    std::fs::write(app.join("Info.plist"), b"<plist><dict><key>CFBundleExecutable</key><string>Main</string></dict></plist>").unwrap();
+    std::fs::write(app.join("Main"), b"never executed").unwrap();
+    let path = app.to_str().unwrap();
+    let refused = cli(&["--format", "json", "apple-package-discover", "--path", path], config.path());
+    assert_eq!(refused.code, Some(1), "{}", refused.stdout_text());
+    let error: Value = serde_json::from_slice(&refused.stdout).unwrap();
+    assert_eq!(error["error"]["details"]["reason"], "clean_room");
+    let output = cli(&["--deep", "--format", "json", "apple-package-discover", "--path", path], config.path());
+    assert!(output.success, "{}", output.stdout_text());
+    let record: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(record["result"]["form"], "app_bundle");
+    assert_eq!(record["result"]["primary_app"], ".");
+    assert!(!config.path().join("config.toml").exists(), "Deep mode is only for this run");
+}
+
+#[test]
 fn ai_request_rate_reads_changes_and_clears_an_api_backends_limit() {
     let config = tempfile::tempdir().unwrap();
     let run = |args: &[&str]| cli(args, config.path());
