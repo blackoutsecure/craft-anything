@@ -1,0 +1,35 @@
+{
+  "active_target_sha256": "1b0911ebb7675312518c6e592a9d8d478688f893b5d500125ed2d5d434f69c0b",
+  "cache_entries": 1,
+  "candidates": [
+    {
+      "bundle_identifier": "com.utmapp.UTM-Remote",
+      "bundle_name": "UTM Remote",
+      "bundle_path": "Payload/UTM Remote.app",
+      "executable_name": "UTM Remote",
+      "executable_path": "Payload/UTM Remote.app/UTM Remote",
+      "info_plist": "Payload/UTM Remote.app/Info.plist",
+      "valid": true
+    }
+  ],
+  "download": {
+    "authorization": "confirmed_by_caller",
+    "checksum_verified": true,
+    "sha256": "1b0911ebb7675312518c6e592a9d8d478688f893b5d500125ed2d5d434f69c0b",
+    "source_page": "https://github.com/utmapp/UTM/releases/tag/v5.0.9-2",
+    "url": "https://github.com/utmapp/UTM/releases/download/v5.0.9-2/UTM-Remote.ipa"
+  },
+  "evidence_id": "ev_393d867d6e4a2f1fd1f508dc72d4e61019a9651f38ce655ba0c639f476d4b263",
+  "evidence_integrity_verified": true,
+  "files_in_cache_entry": 1,
+  "installed_or_executed": false,
+  "network": "live public HTTPS, no mock or seeded package cache",
+  "permission_required_and_confirmed": true,
+  "preview_created_no_package_cache": true,
+  "primary_app": "Payload/UTM Remote.app",
+  "project_evidence_read_back": true,
+  "publisher_preview_candidates": 7,
+  "source_revision": "694929b0f62396c17aa3d211b30d649660f51484",
+  "ui": "actual egui controls, offscreen wgpu rendering",
+  "version": 1
+}

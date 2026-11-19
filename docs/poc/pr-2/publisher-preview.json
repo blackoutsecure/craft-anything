@@ -1,0 +1,56 @@
+{
+  "candidates": [
+    {
+      "expected_sha256": "048fc1f3813ce12933a2c563a46361199fd91650a0af356435cdf8f599681748",
+      "license": null,
+      "name": "UTM-HV.ipa",
+      "source_page": "https://github.com/utmapp/UTM/releases/tag/v5.0.9-2",
+      "url": "https://github.com/utmapp/UTM/releases/download/v5.0.9-2/UTM-HV.ipa"
+    },
+    {
+      "expected_sha256": "365eadaa000821f770ab35b2cd8e480eb424c3d8e99949e5d9f4fa043de14fd4",
+      "license": null,
+      "name": "UTM-Remote-visionOS.ipa",
+      "source_page": "https://github.com/utmapp/UTM/releases/tag/v5.0.9-2",
+      "url": "https://github.com/utmapp/UTM/releases/download/v5.0.9-2/UTM-Remote-visionOS.ipa"
+    },
+    {
+      "expected_sha256": "1b0911ebb7675312518c6e592a9d8d478688f893b5d500125ed2d5d434f69c0b",
+      "license": "Apache-2.0 at the published release tag; review the publisher's terms and included notices.",
+      "name": "UTM-Remote.ipa",
+      "source_page": "https://github.com/utmapp/UTM/releases/tag/v5.0.9-2",
+      "url": "https://github.com/utmapp/UTM/releases/download/v5.0.9-2/UTM-Remote.ipa"
+    },
+    {
+      "expected_sha256": "792ccce03fb9a4fda7913c47b8b68a4b1345a6bc719e3680b70a95ecfdf60ebc",
+      "license": null,
+      "name": "UTM-SE-visionOS.ipa",
+      "source_page": "https://github.com/utmapp/UTM/releases/tag/v5.0.9-2",
+      "url": "https://github.com/utmapp/UTM/releases/download/v5.0.9-2/UTM-SE-visionOS.ipa"
+    },
+    {
+      "expected_sha256": "cb640d26b6edf710ef2469c05d88b3a19225ff3a3169fa7a966bd2031fe10330",
+      "license": null,
+      "name": "UTM-SE.ipa",
+      "source_page": "https://github.com/utmapp/UTM/releases/tag/v5.0.9-2",
+      "url": "https://github.com/utmapp/UTM/releases/download/v5.0.9-2/UTM-SE.ipa"
+    },
+    {
+      "expected_sha256": "970e5f5726cd92183544124bf37af87a44e0a546352bcfe1ad2f16901ffb7f18",
+      "license": null,
+      "name": "UTM-visionOS.ipa",
+      "source_page": "https://github.com/utmapp/UTM/releases/tag/v5.0.9-2",
+      "url": "https://github.com/utmapp/UTM/releases/download/v5.0.9-2/UTM-visionOS.ipa"
+    },
+    {
+      "expected_sha256": "81a01267b5785e10e868e6ad8a471efa66e267fb8f189fd971c6511a48bcc0c5",
+      "license": null,
+      "name": "UTM.ipa",
+      "source_page": "https://github.com/utmapp/UTM/releases/tag/v5.0.9-2",
+      "url": "https://github.com/utmapp/UTM/releases/download/v5.0.9-2/UTM.ipa"
+    }
+  ],
+  "needs_page_confirmation": false,
+  "network_used": true,
+  "rejected_links": 2
+}

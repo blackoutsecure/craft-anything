@@ -1,0 +1,12 @@
+{
+  "cache_bytes_hash_verified_twice": true,
+  "cache_files": 1,
+  "cache_mtime_unchanged": true,
+  "evidence_read_back": true,
+  "installed_or_executed": false,
+  "network": "first import uses live public HTTPS",
+  "project_reopened": true,
+  "same_evidence_id": "ev_3396046e16674f2b670f41ccb03d283ddd059e54d3cb6efa1a4c2ca5ce23e5b1",
+  "same_sha256": "1b0911ebb7675312518c6e592a9d8d478688f893b5d500125ed2d5d434f69c0b",
+  "version": 1
+}
