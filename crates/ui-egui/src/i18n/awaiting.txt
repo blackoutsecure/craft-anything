@@ -26,6 +26,7 @@ Expected package SHA-256
 Without a trusted checksum, only a local fingerprint is recorded.
 I have permission to download and inspect this package
 Download and Study
+Wait for the current target change to finish, then try again.
 Package discovery
 Reading publisher links
 Download an authorized IPA, then inspect it without installing or running it.

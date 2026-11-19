@@ -123,7 +123,11 @@ pub fn show(app: &mut CraftApp, ui: &mut Ui, close: &mut bool) {
             if !hash_ok {
                 ui.label(RichText::new(tr("Enter a 64-character hexadecimal SHA-256, or leave it empty.")).color(tokens.danger));
             }
-            let ready = candidate.is_some() && draft.authorized && hash_ok;
+            let target_busy = app.target_change_busy();
+            if target_busy {
+                ui.label(RichText::new(tr("Wait for the current target change to finish, then try again.")).color(tokens.text_dim));
+            }
+            let ready = candidate.is_some() && draft.authorized && hash_ok && !target_busy;
             if widgets::primary_icon(ui, Some("download"), "Download and Study", ready).clicked() {
                 let source_page = candidate.and_then(|candidate| candidate.source_page.clone());
                 let params = json!({
@@ -155,6 +159,92 @@ pub fn show(app: &mut CraftApp, ui: &mut Ui, close: &mut bool) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{Done, Route, jobs};
+    use craft_anything_engine::{Engine, Mode, Session};
+    use craft_anything_testkit::{apple, electron::zip_stored};
+    use std::path::Path;
+    use std::sync::Arc;
+    use std::time::{Duration, Instant};
+
+    fn cached_package(root: &Path, name: &str) -> (String, Value) {
+        let plist = apple::to_xml(&apple::dict(vec![("CFBundleExecutable", apple::s("Main"))]));
+        let bytes = zip_stored(&[(&format!("Payload/{name}.app/Info.plist"), plist.as_bytes()), (&format!("Payload/{name}.app/Main"), b"never executed")]);
+        let hash = craft_anything_engine::evidence::sha256_hex(&bytes);
+        let directory = root.join("package-imports").join(&hash);
+        std::fs::create_dir_all(&directory).unwrap();
+        std::fs::write(directory.join("package.ipa"), bytes).unwrap();
+        let params = json!({"url":format!("https://example.com/{name}.ipa"),"expected_sha256":hash,"confirmed":true,"authorized":true});
+        (hash, params)
+    }
+
+    fn wait_for_completion(app: &mut CraftApp) -> jobs::Finished<Done> {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while Instant::now() < deadline {
+            let mut finished = app.jobs.poll();
+            if let Some(done) = finished.pop() {
+                assert!(finished.is_empty());
+                return done;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        panic!("target-changing worker did not finish");
+    }
+
+    #[test]
+    fn another_import_or_local_open_cannot_overtake_a_completed_unhandled_import() {
+        let root = tempfile::tempdir().unwrap();
+        let (first_hash, first) = cached_package(root.path(), "First");
+        let (second_hash, second) = cached_package(root.path(), "Second");
+        let local = root.path().join("local.txt");
+        std::fs::write(&local, b"local target").unwrap();
+        let mut session = Session::isolated(root.path());
+        session.settings.deep_mode = true;
+        session.settings.mode = Mode::Beginner;
+        let mut app = crate::demo::app(Arc::new(Engine::new(session)));
+        let route = Route::Chat { intro: "Import".into(), cta: false };
+        app.run_tool("apple_package_import", first, route.clone(), Consent::Granted);
+        let done = wait_for_completion(&mut app);
+        assert_eq!(app.engine.session().active().unwrap().target.sha256, first_hash);
+
+        // Even a late Stop cannot roll back a commit the worker already made.
+        app.jobs.cancel(done.job);
+        app.run_tool("apple_package_import", second.clone(), route.clone(), Consent::Granted);
+        app.open_path(local);
+        app.run_tool("core_target_close", json!({}), Route::Silent, Consent::NotAsked);
+        assert_eq!(app.jobs.list.len(), 1);
+        app.handle_done(done);
+        assert_proof_matches_target(&app, &first_hash);
+
+        app.run_tool("apple_package_import", second, route, Consent::Granted);
+        let done = wait_for_completion(&mut app);
+        app.handle_done(done);
+        assert_proof_matches_target(&app, &second_hash);
+    }
+
+    fn assert_proof_matches_target(app: &CraftApp, hash: &str) {
+        let [crate::state::ChatItem::Proof { evidence, .. }] = app.state.chat.as_slice() else {
+            panic!("expected exactly one import proof");
+        };
+        assert_eq!(evidence.subject.sha256.as_deref(), Some(hash));
+        assert_eq!(app.engine.session().active().unwrap().target.sha256, hash);
+    }
+
+    #[test]
+    fn import_can_retry_after_a_worker_failure() {
+        let root = tempfile::tempdir().unwrap();
+        let (hash, params) = cached_package(root.path(), "Retry");
+        let mut session = Session::isolated(root.path());
+        session.settings.deep_mode = true;
+        let mut app = crate::demo::app(Arc::new(Engine::new(session)));
+        let job = app.jobs.spawn("Failed target change", true, |_| Err("worker failed".into()));
+        app.target_change_job = Some(job);
+        let done = wait_for_completion(&mut app);
+        app.handle_done(done);
+        app.run_tool("apple_package_import", params, Route::Chat { intro: "Import".into(), cta: false }, Consent::Granted);
+        let done = wait_for_completion(&mut app);
+        app.handle_done(done);
+        assert_proof_matches_target(&app, &hash);
+    }
 
     #[test]
     fn completed_results_from_the_previous_target_do_not_repopulate_new_target_views() {

@@ -41,7 +41,9 @@ decrypted, re-signed or automatically rebuilt.
 Discovery and active-target adoption share the same verified byte buffer rather than reopening
 the whole IPA. Successful imports reuse the normal target-transition cleanup: the old AI
 conversation stops, target-specific views/selections clear, and late results from the previous
-generation are ignored. Failed imports preserve the previous context. Shared response reading
+generation are ignored. The desktop accepts only one target change at a time until its
+completion is handled, so a second import or local open cannot overtake the first proof.
+Failed imports preserve the previous context. Shared response reading
 preserves typed body timeouts for CLI and MCP callers.
 
 Live verification used the actual built CLI, not an external downloader: an official UTM release

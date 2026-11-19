@@ -205,7 +205,9 @@ Add `--expected-sha256 <64-hex-digest>` to verify a trusted checksum; otherwise 
 only a local fingerprint, not publisher verification. The imported IPA becomes the active target
 and its discovery evidence is retained. Nothing is installed, launched, decrypted or re-signed.
 Successful imports start a fresh target conversation; failures preserve the previous target
-and conversation. Validated cache entries are published atomically and shared by concurrent
+and conversation. The desktop waits for the current target change to finish before accepting
+another import or local open, so the proof matches the active package.
+Validated cache entries are published atomically and shared by concurrent
 imports. Cleanup removes only unpublished staging data, not a package another process may use.
 
 Only public HTTPS sources are accepted, including every redirect and DNS destination. Credentials,

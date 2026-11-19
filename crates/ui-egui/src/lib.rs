@@ -595,6 +595,8 @@ pub struct CraftApp {
     /// Jobs whose result goes into the conversation (a first look, an answer without an AI):
     /// what the Ask screen waits on and its Stop cancels.
     chat_jobs: Vec<u64>,
+    /// Held until the UI consumes the result, not just until the worker stops.
+    target_change_job: Option<u64>,
     target_generation: u64,
     view_dirty: bool,
     last_view: Option<Instant>,
@@ -688,6 +690,7 @@ impl CraftApp {
             saving: None,
             creating: None,
             chat_jobs: Vec::new(),
+            target_change_job: None,
             target_generation: 0,
             asking: Default::default(),
             pausing: Default::default(),
@@ -1015,6 +1018,11 @@ impl CraftApp {
             self.log(true, format!("No tool named {tool}"));
             return;
         };
+        let changes_target = matches!(spec.id, "apple_package_import" | "core_target_open" | "core_target_select" | "core_target_close");
+        if changes_target && self.target_change_busy() {
+            self.toast(tr("Wait for the current target change to finish, then try again."), false);
+            return;
+        }
         match &route {
             Route::Rail(k) => {
                 self.state.lists.insert(*k, Fill::Loading);
@@ -1042,6 +1050,9 @@ impl CraftApp {
         });
         if chat {
             self.chat_jobs.push(job);
+        }
+        if changes_target {
+            self.target_change_job = Some(job);
         }
     }
 
@@ -1177,11 +1188,15 @@ impl CraftApp {
 
     /// Open a file or folder as the active target.
     pub fn open_path(&mut self, path: PathBuf) {
+        if self.target_change_busy() {
+            self.toast(tr("Wait for the current target change to finish, then try again."), false);
+            return;
+        }
         let path = if path.is_absolute() { path } else { std::env::current_dir().map(|d| d.join(&path)).unwrap_or(path) };
         let engine = self.engine.clone();
         let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| path.display().to_string());
         self.toast(i18n::trf("Opening {name}…", &[("name", &name)]), false);
-        self.jobs.spawn(i18n::trf("Open {name}", &[("name", &name)]), true, move |j| {
+        let job = self.jobs.spawn(i18n::trf("Open {name}", &[("name", &name)]), true, move |j| {
             let params = json!({"path": path.to_string_lossy()});
             let result = engine.call("core_target_open", params, CallOptions::new(Caller::Ui).with_cancel(j.cancel.clone())).map(|o| match o {
                 ToolOutput::Value(v) => v,
@@ -1189,6 +1204,11 @@ impl CraftApp {
             });
             Ok(Done::Opened { path, result })
         });
+        self.target_change_job = Some(job);
+    }
+
+    fn target_change_busy(&self) -> bool {
+        self.target_change_job.is_some()
     }
 
     /// Show a native file dialog on a worker thread.
@@ -1550,6 +1570,9 @@ impl CraftApp {
     /// Apply a completed background job, reporting failures and accepting picker results only for matching requests.
     fn handle_done(&mut self, done: jobs::Finished<Done>) {
         let job = done.job;
+        if self.target_change_job == Some(job) {
+            self.target_change_job = None;
+        }
         let checked_agent = self.agent_connection_jobs.remove(&job);
         if self.saving == Some(job) {
             self.saving = None;
