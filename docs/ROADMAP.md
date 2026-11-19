@@ -2098,7 +2098,9 @@ Owner: open · Status: in progress
 - [x] Harden iOS package discovery against concurrent member replacement, under-declared ZIP
       directories and deeply nested path-validation work; validate a licensed public app release.
       — claimed: Copilot, branch feature/r3.11-ios-package-discovery
-- [ ] **decision**: Offer **Import from link** alongside local file picking and drag-and-drop.
+- [ ] Offer **Import from link** alongside local file picking and drag-and-drop.
+      Approved for implementation by the user's follow-up instruction.
+      — claimed: Copilot, branch feature/r3.11-package-link-import
       Accept a direct HTTPS IPA link, or a publisher website/release-page link that presents
       downloadable package candidates for the person to choose; do not treat that source page
       as a website-rebuild target. Offer vetted publisher download suggestions when useful,
