@@ -127,7 +127,14 @@ pub fn hero(app: &mut CraftApp, ui: &mut Ui, w: f32) {
     ui.add_space(theme::space::LG);
     widgets::card(&t).inner_margin(theme::pad::ROOMY).show(ui, |ui| {
         ui.set_width(w - 50.0);
-        step_title(ui, 1, "What do you want to recreate?");
+        ui.horizontal(|ui| {
+            step_title(ui, 1, "What do you want to recreate?");
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if widgets::link(ui, "Import from link").clicked() {
+                    crate::package_links::open(app);
+                }
+            });
+        });
         ui.add_space(theme::space::MD);
         choose_target(app, ui);
         // How closely the original may be looked at: in view from the start, chosen once there is one.
@@ -302,6 +309,18 @@ fn look(app: &mut CraftApp, ui: &mut Ui, w: f32) {
             .clicked()
         {
             app.pick(Pick::OpenFile);
+        }
+        if widgets::choice_tile(
+            ui,
+            size,
+            "download",
+            "Import from link",
+            "Download an authorized IPA, then inspect it without installing or running it.",
+            false,
+        )
+        .clicked()
+        {
+            crate::package_links::open(app);
         }
         if widgets::choice_tile(ui, size, "globe", "A website", "See how a page is built: its layout, styles, scripts and the requests it makes.", false)
             .clicked()

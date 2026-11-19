@@ -133,6 +133,7 @@ pub fn modals(app: &mut CraftApp, ctx: &egui::Context) {
                         }
                     });
                 }
+                Modal::PackageLink => crate::package_links::show(app, ui, &mut close),
                 Modal::Tutorial(i) => {
                     if let Some((_, title, blurb, steps)) = TUTORIALS.get(*i) {
                         ui.label(theme::heading(tr(title), theme::SECTION));

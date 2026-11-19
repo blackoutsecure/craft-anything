@@ -2098,12 +2098,14 @@ Owner: open · Status: in progress
 - [x] Harden iOS package discovery against concurrent member replacement, under-declared ZIP
       directories and deeply nested path-validation work; validate a licensed public app release.
       — claimed: Copilot, branch feature/r3.11-ios-package-discovery
-- [ ] **decision**: Offer **Import from link** alongside local file picking and drag-and-drop.
+- [x] Offer **Import from link** alongside local file picking and drag-and-drop.
+      Approved for implementation by the user's follow-up instruction.
+      — claimed: Copilot, branch feature/r3.11-package-link-import
       Accept a direct HTTPS IPA link, or a publisher website/release-page link that presents
       downloadable package candidates for the person to choose; do not treat that source page
       as a website-rebuild target. Offer vetted publisher download suggestions when useful,
       with no automatic download merely because a link was suggested. GitHub releases are one
-      supported source proposal, not the only one.
+      supported source, not the only one.
       Preview source, app/version, license/permission and publisher checksum availability;
       require explicit confirmation before downloading to a private cache and handing the
       package to existing strict discovery in Deep mode. Record source/asset identity and
@@ -2114,6 +2116,11 @@ Owner: open · Status: in progress
       Test direct links, page candidates, suggestions without downloads, consent/refusal,
       redirects, limits, checksum failures and unchanged local input with local fixtures.
       No App Store acquisition, decryption, signing, installation or automatic launch.
+      — in PR [blackoutsecure/craft-anything#2](https://github.com/blackoutsecure/craft-anything/pull/2),
+      stacked on the local-discovery PR.
+- [ ] Make the existing non-text game-folder test fixture portable: macOS APFS rejects its
+      `game-\xff` directory before application code runs. The fixture and implementation are
+      unchanged by package-link import; this is a separate test-portability gap.
 - [x] Bound native value-flow decoding and incoming parameter nodes by the requested graph node budget, and mark omitted code as partial.
       — claimed: Afloat16, branch bugfix/r3.11-value-flow-budget-20261110
 - [x] Filter ARM32 and Thumb stack-pointer (`r13`) and program-counter (`r15`) bookkeeping out of `dataflow::def_use` without hiding general-purpose `r13`/`r15` on x86-64, and clobber only canonical full-width scratch registers (`rax`, `rcx`, `rdx`) on 32-/16-bit x86 calls.

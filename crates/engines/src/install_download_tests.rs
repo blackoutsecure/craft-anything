@@ -8,15 +8,19 @@ use std::thread::{self, JoinHandle};
 const PAYLOAD: &[u8] = b"engine archive fixture";
 const SIGNATURE: &str = "signed-query-must-stay-private";
 
-struct Server {
-    url: String,
-    seen: Arc<AtomicUsize>,
+pub(crate) struct Server {
+    pub(crate) url: String,
+    pub(crate) seen: Arc<AtomicUsize>,
     stop: Arc<AtomicBool>,
     worker: Option<JoinHandle<()>>,
 }
 
 impl Server {
-    fn start(tls: Option<Arc<rustls::ServerConfig>>, reply: impl Fn(&str) -> String + Send + 'static) -> Self {
+    pub(crate) fn start(tls: Option<Arc<rustls::ServerConfig>>, reply: impl Fn(&str) -> String + Send + 'static) -> Self {
+        Self::start_delayed_body(tls, Duration::ZERO, reply)
+    }
+
+    pub(crate) fn start_delayed_body(tls: Option<Arc<rustls::ServerConfig>>, body_delay: Duration, reply: impl Fn(&str) -> String + Send + 'static) -> Self {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         listener.set_nonblocking(true).unwrap();
         let url = format!("{}://localhost:{}", if tls.is_some() { "https" } else { "http" }, listener.local_addr().unwrap().port());
@@ -32,9 +36,9 @@ impl Server {
                         socket.set_write_timeout(Some(Duration::from_secs(3))).unwrap();
                         if let Some(config) = &tls {
                             let conn = rustls::ServerConnection::new(config.clone()).unwrap();
-                            respond(&mut rustls::StreamOwned::new(conn, socket), &count, &reply);
+                            respond(&mut rustls::StreamOwned::new(conn, socket), &count, body_delay, &reply);
                         } else {
-                            respond(&mut { socket }, &count, &reply);
+                            respond(&mut { socket }, &count, body_delay, &reply);
                         }
                     }
                     Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => thread::sleep(Duration::from_millis(5)),
@@ -55,7 +59,7 @@ impl Drop for Server {
     }
 }
 
-fn respond(stream: &mut (impl Read + Write), count: &AtomicUsize, reply: &impl Fn(&str) -> String) {
+fn respond(stream: &mut (impl Read + Write), count: &AtomicUsize, body_delay: Duration, reply: &impl Fn(&str) -> String) {
     let mut header = Vec::new();
     let mut byte = [0];
     let deadline = std::time::Instant::now() + Duration::from_secs(3);
@@ -70,6 +74,17 @@ fn respond(stream: &mut (impl Read + Write), count: &AtomicUsize, reply: &impl F
     }
     count.fetch_add(1, Ordering::SeqCst);
     let response = reply(&String::from_utf8_lossy(&header));
+    if !body_delay.is_zero()
+        && let Some(at) = response.find("\r\n\r\n")
+    {
+        let (headers, body) = response.split_at(at + 4);
+        let _ = stream.write_all(headers.as_bytes());
+        let _ = stream.flush();
+        thread::sleep(body_delay);
+        let _ = stream.write_all(body.as_bytes());
+        let _ = stream.flush();
+        return;
+    }
     let _ = stream.write_all(response.as_bytes());
     let _ = stream.flush();
 }
@@ -82,14 +97,15 @@ fn payload(_: &str) -> String {
     format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", PAYLOAD.len(), String::from_utf8_lossy(PAYLOAD))
 }
 
-struct Tls {
-    server: Arc<rustls::ServerConfig>,
+pub(crate) struct Tls {
+    pub(crate) server: Arc<rustls::ServerConfig>,
+    pub(crate) client: ureq::tls::TlsConfig,
     agent: ureq::Agent,
 }
 
 impl Tls {
-    fn new() -> Self {
-        let key = rcgen::generate_simple_self_signed(vec!["localhost".into()]).unwrap();
+    pub(crate) fn new() -> Self {
+        let key = rcgen::generate_simple_self_signed(vec!["localhost".into(), "packages.example.com".into()]).unwrap();
         let cert = key.cert.der().clone();
         let private = rustls::pki_types::PrivatePkcs8KeyDer::from(key.signing_key.serialize_der());
         let server = rustls::ServerConfig::builder_with_provider(Arc::new(rustls::crypto::ring::default_provider()))
@@ -104,13 +120,13 @@ impl Tls {
         // Only this client trusts this runtime-generated certificate. No global TLS/proxy changes.
         let agent = download_config()
             .proxy(None)
-            .tls_config(tls)
+            .tls_config(tls.clone())
             .timeout_connect(Some(Duration::from_secs(3)))
             .timeout_recv_response(Some(Duration::from_secs(3)))
             .timeout_recv_body(Some(Duration::from_secs(3)))
             .build()
             .new_agent();
-        Self { server: Arc::new(server), agent }
+        Self { server: Arc::new(server), client: tls, agent }
     }
 
     fn save(&self, url: &str, dest: &Path, hash: &str) -> Result<(), ToolError> {

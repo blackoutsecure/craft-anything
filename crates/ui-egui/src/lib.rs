@@ -28,6 +28,7 @@ pub mod make;
 pub mod manage;
 #[cfg(target_os = "macos")]
 pub mod menu;
+pub mod package_links;
 pub mod palette;
 pub mod paste;
 pub mod pins;
@@ -149,6 +150,7 @@ pub enum Done {
         tool: String,
         params: Value,
         route: Route,
+        target_generation: u64,
         result: Result<ToolOutput, ToolError>,
     },
     Opened {
@@ -593,6 +595,9 @@ pub struct CraftApp {
     /// Jobs whose result goes into the conversation (a first look, an answer without an AI):
     /// what the Ask screen waits on and its Stop cancels.
     chat_jobs: Vec<u64>,
+    /// Held until the UI consumes the result, not just until the worker stops.
+    target_change_job: Option<u64>,
+    target_generation: u64,
     view_dirty: bool,
     last_view: Option<Instant>,
     applied_theme: Option<(ThemeKind, bool)>,
@@ -685,6 +690,8 @@ impl CraftApp {
             saving: None,
             creating: None,
             chat_jobs: Vec::new(),
+            target_change_job: None,
+            target_generation: 0,
             asking: Default::default(),
             pausing: Default::default(),
             pending_consent: Default::default(),
@@ -1011,6 +1018,11 @@ impl CraftApp {
             self.log(true, format!("No tool named {tool}"));
             return;
         };
+        let changes_target = matches!(spec.id, "apple_package_import" | "core_target_open" | "core_target_select" | "core_target_close");
+        if changes_target && self.target_change_busy() {
+            self.toast(tr("Wait for the current target change to finish, then try again."), false);
+            return;
+        }
         match &route {
             Route::Rail(k) => {
                 self.state.lists.insert(*k, Fill::Loading);
@@ -1029,14 +1041,18 @@ impl CraftApp {
         let title = spec.title.to_string();
         self.log(false, format!("Running {id}"));
         let chat = matches!(route, Route::Chat { .. });
+        let target_generation = self.target_generation;
         let job = self.jobs.spawn(title, true, move |j| {
             let progress = j.reporter();
             let opts = CallOptions::new(Caller::Ui).with_consent(consent).with_cancel(j.cancel.clone()).with_progress(&progress);
             let result = engine.call(&id, params.clone(), opts);
-            Ok(Done::Tool { tool: id, params, route, result })
+            Ok(Done::Tool { tool: id, params, route, target_generation, result })
         });
         if chat {
             self.chat_jobs.push(job);
+        }
+        if changes_target {
+            self.target_change_job = Some(job);
         }
     }
 
@@ -1056,6 +1072,7 @@ impl CraftApp {
 
     fn acted(&mut self, job: u64, tool: &str, params: &Value, result: Result<Value, ToolError>) {
         match (tool, result) {
+            ("apple_package_sources", result) => package_links::preview_done(self, job, result),
             ("project_preview", Ok(v)) => {
                 let url = v.get("url").and_then(Value::as_str).map(str::to_string);
                 self.preview.clone_from(&url);
@@ -1171,11 +1188,15 @@ impl CraftApp {
 
     /// Open a file or folder as the active target.
     pub fn open_path(&mut self, path: PathBuf) {
+        if self.target_change_busy() {
+            self.toast(tr("Wait for the current target change to finish, then try again."), false);
+            return;
+        }
         let path = if path.is_absolute() { path } else { std::env::current_dir().map(|d| d.join(&path)).unwrap_or(path) };
         let engine = self.engine.clone();
         let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| path.display().to_string());
         self.toast(i18n::trf("Opening {name}…", &[("name", &name)]), false);
-        self.jobs.spawn(i18n::trf("Open {name}", &[("name", &name)]), true, move |j| {
+        let job = self.jobs.spawn(i18n::trf("Open {name}", &[("name", &name)]), true, move |j| {
             let params = json!({"path": path.to_string_lossy()});
             let result = engine.call("core_target_open", params, CallOptions::new(Caller::Ui).with_cancel(j.cancel.clone())).map(|o| match o {
                 ToolOutput::Value(v) => v,
@@ -1183,6 +1204,11 @@ impl CraftApp {
             });
             Ok(Done::Opened { path, result })
         });
+        self.target_change_job = Some(job);
+    }
+
+    fn target_change_busy(&self) -> bool {
+        self.target_change_job.is_some()
     }
 
     /// Show a native file dialog on a worker thread.
@@ -1544,6 +1570,9 @@ impl CraftApp {
     /// Apply a completed background job, reporting failures and accepting picker results only for matching requests.
     fn handle_done(&mut self, done: jobs::Finished<Done>) {
         let job = done.job;
+        if self.target_change_job == Some(job) {
+            self.target_change_job = None;
+        }
         let checked_agent = self.agent_connection_jobs.remove(&job);
         if self.saving == Some(job) {
             self.saving = None;
@@ -1607,25 +1636,19 @@ impl CraftApp {
             Done::Created { ws, request, backend, pictures, attached } => self.created(*ws, request, backend, pictures, attached),
             Done::Thumb { path, image } => self.thumb_ready(path, image),
             Done::Preview { path, image } => self.preview_ready(path, image),
-            Done::Tool { tool, params, route, result } => self.tool_done(tool, params, route, result),
+            Done::Tool { tool, params, route, target_generation, result } => {
+                if target_generation == self.target_generation {
+                    self.tool_done(tool, params, route, result);
+                }
+            }
             Done::Acted { tool, params, result } => self.acted(job, tool, &params, result),
             Done::Opened { path, result } => match result {
                 Ok(v) => {
-                    // Another target: a new conversation, so answers about two things don't mix.
-                    if self.view.active_target().is_some_and(|t| t.path != path) {
-                        self.state.chat.clear();
-                        if let Some(mut c) = self.conversation.take() {
-                            c.stop();
-                        }
-                    }
+                    self.reset_target_context(self.view.active_target().is_some_and(|t| t.path != path));
                     self.settings.recent.retain(|p| p != &path);
                     self.settings.recent.insert(0, path.clone());
                     self.settings.recent.truncate(12);
                     self.settings_changed();
-                    self.state.lists.clear();
-                    self.state.views.clear();
-                    self.state.selection = None;
-                    self.view_dirty = true;
                     let name = v.get("name").and_then(Value::as_str).unwrap_or("it").to_string();
                     self.toast(i18n::trf("Opened {name}", &[("name", &name)]), false);
                     self.log(false, format!("Opened {}", path.display()));
@@ -1855,7 +1878,29 @@ impl CraftApp {
         }
     }
 
+    fn reset_target_context(&mut self, new_conversation: bool) {
+        if new_conversation {
+            self.target_generation = self.target_generation.wrapping_add(1);
+            self.state.chat.clear();
+            if let Some(mut conversation) = self.conversation.take() {
+                conversation.stop();
+            }
+            for job in self.chat_jobs.drain(..) {
+                self.jobs.cancel(job);
+            }
+            self.pending_consent.clear();
+        }
+        self.state.lists.clear();
+        self.state.views.clear();
+        self.state.selection = None;
+        self.state.selected_evidence = None;
+        self.view_dirty = true;
+    }
+
     fn tool_done(&mut self, tool: String, params: Value, route: Route, result: Result<ToolOutput, ToolError>) {
+        if tool == "apple_package_import" && matches!(&result, Ok(ToolOutput::Evidence(_))) {
+            self.reset_target_context(true);
+        }
         self.view_dirty = true;
         let fill = match &result {
             Ok(ToolOutput::Evidence(e)) => Fill::Ready(e.clone()),

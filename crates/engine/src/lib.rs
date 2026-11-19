@@ -237,7 +237,11 @@ impl Engine {
     /// Run a tool by id. When a project is open, the call is appended to its journal.
     pub fn call(&self, id: &str, params: Value, opts: CallOptions<'_>) -> Result<ToolOutput, ToolError> {
         let started = std::time::Instant::now();
-        let logged_params = journal::bounded(&params);
+        let logged_params = if matches!(id, "apple_package_sources" | "apple_package_import") {
+            journal::bounded(&serde_json::json!({"package_link_request":true,"confirmed":params.get("confirmed"),"authorized":params.get("authorized")}))
+        } else {
+            journal::bounded(&params)
+        };
         let caller = opts.caller;
         let mut journal_at = JournalAt::Live;
         let result = self.call_inner(id, params, opts, &mut journal_at);

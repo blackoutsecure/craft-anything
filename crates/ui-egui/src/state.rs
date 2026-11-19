@@ -363,6 +363,7 @@ pub enum Modal {
         icon: String,
     },
     Website,
+    PackageLink,
     Tutorial(usize),
     About,
     /// Getting a game engine (Unity, Unreal, Godot, Rust), step by step.
@@ -434,6 +435,9 @@ pub struct UiState {
     pub settings_tab: SettingsTab,
     pub modal: Option<Modal>,
     pub url_input: String,
+    /// Draft source links and permission are never restored from saved UI state.
+    #[serde(skip)]
+    pub package_link: crate::package_links::LinkDraft,
     /// One-line message at the bottom of the window (errors and confirmations).
     /// Newest last: (text, is an error). Confirmations go after a few seconds; errors stay until
     /// dismissed, so a later message never hides one.
@@ -609,6 +613,7 @@ impl Default for UiState {
             settings_tab: SettingsTab::General,
             modal: None,
             url_input: String::new(),
+            package_link: Default::default(),
             toasts: Vec::new(),
             make: MakeDraft::default(),
             feed: Vec::new(),
