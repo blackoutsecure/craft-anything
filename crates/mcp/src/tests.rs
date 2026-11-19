@@ -192,6 +192,22 @@ fn ios_package_discovery_is_hidden_and_refused_over_mcp_in_clean_room() {
 }
 
 #[test]
+fn package_links_over_mcp_preview_offline_and_do_not_treat_tool_access_as_download_permission() {
+    let out = run(&[
+        req(1, "tools/call", json!({"name":"apple_package_sources","arguments":{"url":"https://downloads.example.com/Example.ipa"}})),
+        req(2, "tools/call", json!({"name":"apple_package_import","arguments":{"url":"https://downloads.example.com/Example.ipa"}})),
+    ]);
+    let preview = response(&out, 1);
+    assert_eq!(preview["result"]["isError"], false);
+    assert_eq!(preview["result"]["structuredContent"]["result"]["network_used"], false);
+    assert_eq!(preview["result"]["_meta"]["provenance"]["from_target"], true);
+    let refused = response(&out, 2);
+    assert_eq!(refused["result"]["isError"], true);
+    let error: Value = serde_json::from_str(refused["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
+    assert_eq!(error["error"]["code"], "consent_required");
+}
+
+#[test]
 fn hidden_tool_call_enables_its_toolset() {
     let out = run(&[req(1, "tools/call", json!({"name": "native_cursor_show", "arguments": {}}))]);
     assert!(out.iter().any(|m| m["method"] == "notifications/tools/list_changed"));

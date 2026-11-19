@@ -416,7 +416,7 @@ fn inspect_candidates(ctx: &Ctx<'_>, discovery: &mut Discovery, source: &Package
     Ok(())
 }
 
-fn apple_package_discover(ctx: &mut Ctx<'_>, params: Value) -> Result<ToolOutput, ToolError> {
+pub(crate) fn apple_package_discover(ctx: &mut Ctx<'_>, params: Value) -> Result<ToolOutput, ToolError> {
     let p: PackageParams = parse_params(params)?;
     let defaults = InvLimits::default();
     if p.max_entries == 0 || p.max_entries > defaults.max_entries || p.max_total_bytes == 0 || p.max_total_bytes > defaults.max_total_bytes {

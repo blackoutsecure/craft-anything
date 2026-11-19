@@ -185,6 +185,34 @@ Results are evidence records with their confidence, coverage and limitations; bi
 as a summary first and are paged with `core_evidence_browse`. `craft-anything-cli setup`
 connects Craft Anything to coding-agent apps.
 
+### Study an iOS package from a link
+
+In Deep mode, choose **Just look inside → Import from link** (also beside the local target
+choices). Paste a direct HTTPS IPA link, or preview a public publisher page and choose an IPA.
+Suggested publisher links are optional: selecting or previewing one does not download the app.
+Review the source and terms, optionally provide a trusted SHA-256, confirm you have permission,
+then choose **Download and Study**. Local file picking and drag-and-drop are unchanged.
+
+The same flow is available headlessly:
+
+```sh
+craft-anything-cli --deep apple-package-sources
+craft-anything-cli --deep apple-package-sources --url https://publisher.example.com/releases --read-page
+craft-anything-cli --deep apple-package-import --url https://publisher.example.com/App.ipa --confirmed --authorized
+```
+
+Add `--expected-sha256 <64-hex-digest>` to verify a trusted checksum; otherwise the result records
+only a local fingerprint, not publisher verification. The imported IPA becomes the active target
+and its discovery evidence is retained. Nothing is installed, launched, decrypted or re-signed.
+
+Only public HTTPS sources are accepted, including every redirect and DNS destination. Credentials,
+query-bearing submitted URLs, nonstandard ports, local/private networks and implicit proxies are
+not used; use a stable publisher link rather than a signed browser URL. Publisher previews read
+bounded static links or the public GitHub release API, never page code or a logged-in browser.
+The default download cap is 256 MiB (512 MiB maximum), with a 120-second deadline and five redirects.
+Permission is confirmed by the caller, not inferred from a catalog or determined by Craft Anything.
+This is package Study/discovery, not an iOS build, simulator, device-install or App Store workflow.
+
 ## Under the hood
 
 A pure-Rust reverse-engineering engine with 320 tools (300 in the engine, the rest from the AI and

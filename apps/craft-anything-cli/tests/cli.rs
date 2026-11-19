@@ -86,6 +86,24 @@ fn ios_package_discovery_is_registered_on_the_cli_and_requires_deep_mode() {
 }
 
 #[test]
+fn package_link_tools_preview_without_downloading_and_require_explicit_permission() {
+    let config = tempfile::tempdir().unwrap();
+    let preview = cli(&["--deep", "--format", "json", "apple-package-sources", "--url", "https://downloads.example.com/Example.ipa"], config.path());
+    assert!(preview.success, "{}", preview.stdout_text());
+    let body: Value = serde_json::from_slice(&preview.stdout).unwrap();
+    assert_eq!(body["result"]["network_used"], false);
+    assert_eq!(body["result"]["candidates"][0]["url"], "https://downloads.example.com/Example.ipa");
+    let refused = cli(&["--deep", "--format", "json", "apple-package-import", "--url", "https://downloads.example.com/Example.ipa"], config.path());
+    assert_eq!(refused.code, Some(1));
+    let body: Value = serde_json::from_slice(&refused.stdout).unwrap();
+    assert_eq!(body["error"]["code"], "consent_required");
+    let clean = cli(&["--clean-room", "--format", "json", "apple-package-sources"], config.path());
+    let body: Value = serde_json::from_slice(&clean.stdout).unwrap();
+    assert_eq!(body["error"]["details"]["reason"], "clean_room");
+    assert!(!config.path().join("package-imports").exists());
+}
+
+#[test]
 fn ai_request_rate_reads_changes_and_clears_an_api_backends_limit() {
     let config = tempfile::tempdir().unwrap();
     let run = |args: &[&str]| cli(args, config.path());

@@ -58,6 +58,7 @@ pub mod apple_package_tools;
 pub mod apple_tools;
 pub mod artifact_tools;
 pub mod js_tools;
+pub mod package_link_tools;
 // .NET assemblies (built-in ECMA-335 reader).
 pub mod managed_tools;
 pub mod web_tools;
@@ -147,6 +148,7 @@ pub fn all() -> Vec<crate::ToolSpec> {
     v.extend(native_formats::specs());
     v.extend(apple_tools::specs());
     v.extend(apple_package_tools::specs());
+    v.extend(package_link_tools::specs());
     v.extend(android_tools::specs());
     v.extend(java_tools::specs());
     v.extend(adb_tools::specs());

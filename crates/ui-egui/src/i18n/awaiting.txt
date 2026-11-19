@@ -11,3 +11,24 @@ Auto: building tools only below a 64k window, every tool from there.
 Auto: every tool, as this AI is a paid service.
 Change a builder's tools
 That folder's name has characters Craft Anything can't read. Pick another folder.
+Discover an iOS package
+Find package download links
+Import an iOS package from a link
+Import from link
+Use a direct IPA link or a public publisher page. Nothing is installed or run.
+Package or publisher link
+Preview link
+Preview reads public page links only; suggested packages are not downloaded.
+Choose a package
+Preview the link, then select an available IPA package.
+Expected SHA-256 (optional)
+Expected package SHA-256
+Without a trusted checksum, only a local fingerprint is recorded.
+I have permission to download and inspect this package
+Download and Study
+Package discovery
+Reading publisher links
+Download an authorized IPA, then inspect it without installing or running it.
+No static IPA links were found. Use a direct publisher download link.
+Enter a 64-character hexadecimal SHA-256, or leave it empty.
+License not verified. Review the publisher's terms.

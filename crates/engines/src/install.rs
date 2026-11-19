@@ -194,7 +194,12 @@ fn download_file_checked(
 
 /// Write `fill`'s bytes beside `dest`, hash them, and move the file into place only when `fill`
 /// succeeded and the hash (if given) matches; otherwise the partial file is removed.
-fn write_checked(dest: &Path, sha256: Option<&str>, url: &str, fill: &mut dyn FnMut(&mut dyn Write) -> Result<u64, ToolError>) -> Result<(), ToolError> {
+pub(crate) fn write_checked(
+    dest: &Path,
+    sha256: Option<&str>,
+    url: &str,
+    fill: &mut dyn FnMut(&mut dyn Write) -> Result<u64, ToolError>,
+) -> Result<(), ToolError> {
     let part = dest.with_extension("download");
     let mut f = std::fs::File::create(&part).map_err(|e| ToolError::io(part.display(), e))?;
     let mut sink = Hashing { file: &mut f, hasher: Sha256::new() };
@@ -317,6 +322,17 @@ fn download_with_agent(
         let code = if matches!(e, ureq::Error::Timeout(_)) { ErrorCode::TimedOut } else { ErrorCode::EngineMissing };
         ToolError::new(code, format!("Couldn't download {url}: {e}")).with_remediation("Check your internet connection and try again.")
     })?;
+    read_download_response(resp, sink, max_bytes, cancel, progress, url)
+}
+
+pub(crate) fn read_download_response(
+    resp: ureq::http::Response<ureq::Body>,
+    sink: &mut dyn Write,
+    max_bytes: u64,
+    cancel: Option<&Cancel>,
+    progress: &dyn Fn(u64, Option<u64>),
+    url: &str,
+) -> Result<u64, ToolError> {
     let status = resp.status().as_u16();
     if !(200..300).contains(&status) {
         return Err(status_error(status, url));
@@ -889,4 +905,4 @@ mod tests {
 
 #[cfg(test)]
 #[path = "install_download_tests.rs"]
-mod download_tests;
+pub(crate) mod download_tests;

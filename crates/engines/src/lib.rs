@@ -18,6 +18,7 @@ pub mod jadx;
 #[cfg(test)]
 mod known_roots_tests;
 pub mod mcp_client;
+pub mod public_download;
 pub mod rizin;
 pub mod table;
 #[cfg(feature = "wasm-plugins")]

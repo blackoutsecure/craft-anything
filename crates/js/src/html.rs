@@ -20,6 +20,9 @@ pub struct HtmlScript {
 pub struct HtmlFacts {
     pub scripts: Vec<HtmlScript>,
     pub preloads: Vec<String>,
+    /// Static anchor destinations, in document order; at most 2,000. Page code is never run.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub links: Vec<String>,
     /// Nonempty meta policies in document order, separated by a comma and space.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub csp: Option<String>,
@@ -168,12 +171,21 @@ pub fn scan_html(src: &str) -> HtmlFacts {
         let at = pos + rel;
         let rest = lower.get(at + 1..).unwrap_or("");
         // Inspect only the names we handle: malformed runs of `<` must not rescan the remaining document.
-        let name = ["script", "link", "meta", "title", "style", "textarea", "xmp", "iframe", "noembed", "noframes", "plaintext"]
+        let name = ["script", "link", "meta", "title", "style", "textarea", "xmp", "iframe", "noembed", "noframes", "plaintext", "a"]
             .into_iter()
             .find(|name| rest.starts_with(*name) && rest.as_bytes().get(name.len()).is_none_or(|c| c.is_ascii_whitespace() || matches!(*c, b'/' | b'>')))
             .unwrap_or_default();
         let after = at + 1 + name.len();
         match name {
+            "a" => {
+                let Some((attrs, end)) = attributes(src, &lower, after) else { break };
+                if let Some(href) = get(&attrs, "href")
+                    && out.links.len() < MAX_TAGS
+                {
+                    out.links.push(href.into());
+                }
+                pos = end.max(at + 1);
+            }
             "script" => {
                 let Some((attrs, end)) = attributes(src, &lower, after) else { break };
                 let close = closing_tag(&lower, end, "script").unwrap_or(lower.len());

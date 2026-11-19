@@ -28,6 +28,7 @@ pub mod make;
 pub mod manage;
 #[cfg(target_os = "macos")]
 pub mod menu;
+pub mod package_links;
 pub mod palette;
 pub mod paste;
 pub mod pins;
@@ -1056,6 +1057,7 @@ impl CraftApp {
 
     fn acted(&mut self, job: u64, tool: &str, params: &Value, result: Result<Value, ToolError>) {
         match (tool, result) {
+            ("apple_package_sources", result) => package_links::preview_done(self, job, result),
             ("project_preview", Ok(v)) => {
                 let url = v.get("url").and_then(Value::as_str).map(str::to_string);
                 self.preview.clone_from(&url);

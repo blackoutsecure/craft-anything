@@ -8,15 +8,15 @@ use std::thread::{self, JoinHandle};
 const PAYLOAD: &[u8] = b"engine archive fixture";
 const SIGNATURE: &str = "signed-query-must-stay-private";
 
-struct Server {
-    url: String,
-    seen: Arc<AtomicUsize>,
+pub(crate) struct Server {
+    pub(crate) url: String,
+    pub(crate) seen: Arc<AtomicUsize>,
     stop: Arc<AtomicBool>,
     worker: Option<JoinHandle<()>>,
 }
 
 impl Server {
-    fn start(tls: Option<Arc<rustls::ServerConfig>>, reply: impl Fn(&str) -> String + Send + 'static) -> Self {
+    pub(crate) fn start(tls: Option<Arc<rustls::ServerConfig>>, reply: impl Fn(&str) -> String + Send + 'static) -> Self {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         listener.set_nonblocking(true).unwrap();
         let url = format!("{}://localhost:{}", if tls.is_some() { "https" } else { "http" }, listener.local_addr().unwrap().port());
@@ -82,14 +82,15 @@ fn payload(_: &str) -> String {
     format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", PAYLOAD.len(), String::from_utf8_lossy(PAYLOAD))
 }
 
-struct Tls {
-    server: Arc<rustls::ServerConfig>,
+pub(crate) struct Tls {
+    pub(crate) server: Arc<rustls::ServerConfig>,
+    pub(crate) client: ureq::tls::TlsConfig,
     agent: ureq::Agent,
 }
 
 impl Tls {
-    fn new() -> Self {
-        let key = rcgen::generate_simple_self_signed(vec!["localhost".into()]).unwrap();
+    pub(crate) fn new() -> Self {
+        let key = rcgen::generate_simple_self_signed(vec!["localhost".into(), "packages.example.com".into()]).unwrap();
         let cert = key.cert.der().clone();
         let private = rustls::pki_types::PrivatePkcs8KeyDer::from(key.signing_key.serialize_der());
         let server = rustls::ServerConfig::builder_with_provider(Arc::new(rustls::crypto::ring::default_provider()))
@@ -104,13 +105,13 @@ impl Tls {
         // Only this client trusts this runtime-generated certificate. No global TLS/proxy changes.
         let agent = download_config()
             .proxy(None)
-            .tls_config(tls)
+            .tls_config(tls.clone())
             .timeout_connect(Some(Duration::from_secs(3)))
             .timeout_recv_response(Some(Duration::from_secs(3)))
             .timeout_recv_body(Some(Duration::from_secs(3)))
             .build()
             .new_agent();
-        Self { server: Arc::new(server), agent }
+        Self { server: Arc::new(server), client: tls, agent }
     }
 
     fn save(&self, url: &str, dest: &Path, hash: &str) -> Result<(), ToolError> {

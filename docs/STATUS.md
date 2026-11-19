@@ -6,6 +6,55 @@ workspace clippy, layers, fmt and the secret scan of all history were clean. Chi
 
 ## What works, and how it was checked
 
+### Confirmed package-link import (R3.11)
+
+**Import from link** is available beside the local target choices and under **Just look inside**.
+It previews direct public HTTPS IPA links, public GitHub release assets, or bounded static
+HTML download links without executing page code. A suggested UTM Remote publisher link is
+available offline. Selecting or previewing a package does not download the app. After the
+person chooses a package, reviews the source/checksum/permission information and explicitly
+confirms **Download and Study**, the shared `apple_package_import` tool downloads it, invokes
+the existing strict discovery operation and makes the local IPA the active target.
+`apple_package_sources` provides the same preview/listing to CLI and MCP callers.
+
+Both tools require Deep mode. Publisher-page reads require an explicit `read_page` request;
+imports require both `confirmed` and `authorized` for each call. There are no implicit browser
+credentials or proxies. The public-address resolver pins checked socket addresses; numeric,
+resolved and redirected local/private destinations are refused. TLS validation stays enabled.
+Submitted links must be stable HTTPS URLs without credentials, queries, fragments or nonstandard
+ports. Transient signed HTTPS redirect queries are allowed internally but not retained in
+provenance. Requests have a 120-second deadline, a five-redirect cap and cooperative cancellation.
+Page reads are limited to 2 MiB and 32 candidates; static anchors reuse the existing bounded
+HTML scanner. Package downloads default to 256 MiB and cannot exceed 512 MiB.
+
+Downloaded content is kept in a private, content-addressed user-config cache. A supplied
+SHA-256 is checked before discovery and verified cached bytes can be reused. Without a trusted
+expected digest the evidence explicitly records an unverified local fingerprint. Failed
+transfers/checksums clean their owned partial download; malformed new packages are not opened.
+Cache symlinks are refused, existing cache content is never overwritten, and sensitive rejected
+link parameters are omitted from the project journal. Legal permission is asserted by the caller,
+not inferred from a catalog or guaranteed by Craft Anything. Nothing is installed, launched,
+decrypted, re-signed or automatically rebuilt.
+
+Live verification used the actual built CLI, not an external downloader: an official UTM release
+page produced seven IPA candidates; UTM Remote downloaded, matched the publisher digest,
+passed discovery and reused its verified cache with unchanged evidence identity and file time.
+The official iSH IPA also imported successfully without a publisher digest and was marked
+`checksum_unverified`. Fourteen scripted checks covered the two real imports, source preview,
+cache reuse, evidence paging, checksum cleanup and refusals. Neither downloaded app was run.
+The native desktop app reached its first rendered frames in 1.936 seconds under an isolated home
+and config; its owned process was stopped afterward. Four headless egui workflows exercise the
+new controls through their shared engine calls. The existing 119-test GUI smoke suite passes,
+including the Start-button height check.
+
+The final selected engine/engines/JavaScript/CLI/MCP/GUI/desktop suites ran without filtering:
+1,660 tests passed, 17 existing tests were ignored, and one unchanged macOS fixture failed while
+creating a non-UTF-8 game-folder name (`Illegal byte sequence`, before application code).
+That file is byte-identical to the discovery base, and the filesystem failure was independently
+reproduced. The full command therefore exits nonzero; it is not claimed green. All new link-import
+tests pass. Clippy with warnings denied, layers, locks, localization fallback coverage, WASM and
+tool-documentation checks pass. Hosted CI and Windows/Linux runtime are not claimed.
+
 ### iOS package discovery (R3.11)
 
 The headless Apple tool `apple_package_discover` recognizes user-supplied `.ipa` files,
