@@ -6,6 +6,74 @@ workspace clippy, layers, fmt and the secret scan of all history were clean. Chi
 
 ## What works, and how it was checked
 
+### iOS package discovery (R3.11)
+
+The headless Apple tool `apple_package_discover` recognizes user-supplied `.ipa` files,
+direct `.app` directories and extracted `Payload` directories. For example:
+`craft-anything-cli --deep apple-package-discover --path /path/to/Example.ipa`.
+The existing tool registry exposes the same operation to MCP clients in the Apple toolset.
+Clean room refuses it before parameter validation, filesystem inspection or ZIP parsing.
+The general ZIP/directory target kinds and the macOS Study/launch behavior are unchanged.
+
+Discovery inventories member metadata, reads each top-level candidate's XML or binary
+`Info.plist` through the existing parser, and resolves `CFBundleExecutable` without a
+bundle-name fallback. Every candidate and parse failure is retained in evidence; the first
+valid candidate in normalized, case-sensitive path order is primary. `valid` means readable
+metadata and a bundle-contained regular executable member, not proof that the app runs.
+`--detail summary` returns counts and a retained evidence reference for paging with
+`core_evidence_browse`; the default `complete` returns all candidates and inventory metadata.
+Missing or malformed metadata gives partial coverage. Unsafe/ambiguous paths, links,
+special archive members and inventory-limit overruns are refused.
+The existing shared ZIP preflight checks end records and the entire central directory before
+the lenient listing is accepted, so under-declared counts cannot hide candidates or unsafe
+members. Namespace conflicts use cancellation-aware prefix-range lookups, not repeated
+ancestor walks. Directory names, metadata and plist reads use pinned, no-follow directory
+handles; a checked pathname is never reopened to read a plist. Executables need only regular
+file metadata, not content-read permission. Summary and complete views share one evidence ID.
+
+The existing inventory ceilings apply: 200,000 members, 1 GiB per member and 8 GiB total
+declared uncompressed data; callers may lower the member and total-byte limits. The existing
+2 GiB target-input ceiling and 64 MiB plist-read ceiling also apply. Only candidate plists
+are read, hashed and (for IPA) CRC-checked. No archive is extracted; executable contents,
+signing, encryption and runtime compatibility are not checked. Directory inputs use the
+existing bounded walker (including its `.git` exclusion), are not atomic snapshots and do
+not claim whole-tree content hashes. Nested apps/extensions are not primary candidates.
+No downloads, decryption, re-signing, installation, launching, SwiftUI builds, simulator
+integration or UI changes are included.
+
+Generated fixtures cover minimal IPA, direct XML/binary-plist bundles, extracted Payload,
+multiple candidates, missing metadata/executables, corrupt ZIP/plist data, traversal,
+absolute/drive paths, duplicate paths, file/directory conflicts, symlink escapes, limits,
+and Clean room refusal. CLI and MCP regressions exercise registration and evidence
+provenance. No proprietary IPA, real-device run or cross-platform live run is claimed.
+Local macOS arm64 verification after review hardening: 2,993 tests passed across the platform,
+formats, engine, MCP and CLI crates, with 31 existing ignored tests. The 27-case discovery
+integration suite passed, along with deterministic member/parent replacement, rooted-directory
+listing, trailing-separator, executable-permission, cancellation and evidence-view identity
+regressions. All-target clippy with warnings denied and formatting checks passed.
+
+The actual built CLI was also run against two maintainer-published apps listed in
+[the open-source iOS catalog](https://github.com/dkhamsing/open-source-ios-apps):
+
+| Official release | Verified source license | IPA / app / Payload members | Result |
+|---|---|---|---|
+| [iSH 1.3.2, build 494](https://github.com/ish-app/ish/releases/tag/builds/494) | GPLv3 with the project's iOS additional permission | 121 / 116 / 117 | Complete discovery in all three forms; bundle `app.ish.iSH`, executable `iSH` |
+| [UTM Remote 5.0.9, build 132](https://github.com/utmapp/UTM/releases/tag/v5.0.9-2) | Apache-2.0 at the release tag | 516 / 514 / 515 | Complete discovery in all three forms; bundle `com.utmapp.UTM-Remote`, executable `UTM Remote` |
+
+Both plists independently report iPhone and iPad device families. Only 2,946 and 2,136 plist
+bytes respectively were read by discovery. Repeated runs in every form, retained-summary
+paging, Clean room refusal and lowered-limit refusals passed. A generated 202-member archive
+with 12,000 nested components per long member completed in 0.369 seconds under a 15-second
+process deadline; this is a local observation, not a performance guarantee.
+
+UTM Remote's download matched GitHub's published SHA-256. iSH has no published asset digest;
+its official asset ID and locally computed hash were recorded without claiming publisher
+checksum verification. Catalog license labels were not treated as approval: each project's
+release-tag license was checked. The existing extractor was invoked separately to prepare
+directory fixtures, which were removed afterward. No downloaded app was installed or run,
+no binary fixture was committed, and no downloader was added to discovery. GUI startup,
+Windows/Linux execution and real-device runtime behavior remain unverified.
+
 ### Local Codex discovery and sign-in (R2.2)
 
 macOS Dock launches can find an executable Codex CLI bundled with ChatGPT.app or

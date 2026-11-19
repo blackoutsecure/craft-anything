@@ -20,6 +20,8 @@ process-wrap = { version = "10", default-features = false, features = ["std", "p
 # Process capture under a pseudo-terminal (safe public APIs; we write no unsafe).
 portable-pty = "0.9"
 vt100 = "0.16"
+cap-std = "4.0.3"
+cap-fs-ext = "4.0.3"
 
 # Window screenshots of a running program (safe API). Windows and macOS only for now: on Linux it
 # needs PipeWire, Wayland/GBM, XCB and clang to build (ROADMAP R2.4).

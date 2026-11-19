@@ -2090,6 +2090,30 @@ Owner: open · Status: in progress
 
 ### R3.11 Single-file apps, game files and stand-in backends
 Owner: open · Status: in progress
+- [x] Discover user-supplied iOS packages (`.ipa`, `.app` and extracted `Payload` folders) in
+      Deep mode with bounded inventories, safe bundle paths, parsed Info.plists, deterministic
+      primary-app selection and evidence; no extraction, execution or build/device integration.
+      — claimed: Copilot, branch feature/r3.11-ios-package-discovery
+      — in PR [blackoutsecure/craft-anything#1](https://github.com/blackoutsecure/craft-anything/pull/1)
+- [x] Harden iOS package discovery against concurrent member replacement, under-declared ZIP
+      directories and deeply nested path-validation work; validate a licensed public app release.
+      — claimed: Copilot, branch feature/r3.11-ios-package-discovery
+- [ ] **decision**: Offer **Import from link** alongside local file picking and drag-and-drop.
+      Accept a direct HTTPS IPA link, or a publisher website/release-page link that presents
+      downloadable package candidates for the person to choose; do not treat that source page
+      as a website-rebuild target. Offer vetted publisher download suggestions when useful,
+      with no automatic download merely because a link was suggested. GitHub releases are one
+      supported source proposal, not the only one.
+      Preview source, app/version, license/permission and publisher checksum availability;
+      require explicit confirmation before downloading to a private cache and handing the
+      package to existing strict discovery in Deep mode. Record source/asset identity and
+      computed SHA-256, distinguishing a publisher-verified digest from a local fingerprint.
+      Reuse the bounded downloader and shared ToolSpec across desktop/CLI/MCP, with cancellation,
+      size/deadline limits, HTTPS-only redirects and private/local-network destination refusal
+      on every hop. Keep pages non-executing and never reuse browser credentials implicitly.
+      Test direct links, page candidates, suggestions without downloads, consent/refusal,
+      redirects, limits, checksum failures and unchanged local input with local fixtures.
+      No App Store acquisition, decryption, signing, installation or automatic launch.
 - [x] Bound native value-flow decoding and incoming parameter nodes by the requested graph node budget, and mark omitted code as partial.
       — claimed: Afloat16, branch bugfix/r3.11-value-flow-budget-20261110
 - [x] Filter ARM32 and Thumb stack-pointer (`r13`) and program-counter (`r15`) bookkeeping out of `dataflow::def_use` without hiding general-purpose `r13`/`r15` on x86-64, and clobber only canonical full-width scratch registers (`rax`, `rcx`, `rdx`) on 32-/16-bit x86 calls.

@@ -1,6 +1,7 @@
-//! Lenient ZIP inspection from craft-zip, preserving bounded reads and CRC validation.
+//! ZIP inspection from craft-zip: lenient listings, strict preflight and bounded CRC-checked reads.
 pub(crate) use craft_zip::lenient::has_entry;
 pub use craft_zip::lenient::{ZipArchive, ZipEntry, ZipError, crc32, looks_like_zip, parse, raw_entry_data, read_entry, read_entry_unverified};
+pub use craft_zip::preflight;
 
 #[cfg(test)]
 #[path = "zip_legacy_tests.rs"]
